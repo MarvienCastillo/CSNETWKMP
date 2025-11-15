@@ -4,166 +4,210 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <stdbool.h>
-#define MaxBufferSize 1024
+#include <conio.h>
+
 #pragma comment(lib,"ws2_32.lib")
 
-// Utility to extract the string after "message_type: "
-char *get_message_type(char *message){
-    char *message_type = strstr(message,"message_type: ");
-    if(message_type){
-        return message_type + 14;
-    }
+#define MaxBufferSize 1024
+
+typedef struct {
+    int specialAttack;
+    int specialDefense;
+} StatBoosts;
+
+typedef struct {
+    char communicationMode[32]; // P2P or BROADCAST
+    char pokemonName[64];
+    StatBoosts boosts;
+} BattleSetupData;
+
+// Extract message after "message_type: "
+char *get_message_type(char *message) {
+    char *msg = strstr(message, "message_type: ");
+    if (msg) return msg + 14;
     return NULL;
 }
 
-int main(){
+// Remove trailing newline
+void clean_newline(char *str) {
+    size_t len = strlen(str);
+    if (len > 0 && str[len - 1] == '\n') str[len - 1] = '\0';
+}
+
+int main() {
     WSADATA wsa;
-    
-    // START WINSOCK CHECK
+    SOCKET socket_network;
+    struct sockaddr_in server_address, from_server;
+    int from_len = sizeof(from_server);
+    BattleSetupData setup;
+    char receive[MaxBufferSize];
+    char buffer[MaxBufferSize];
+    char full_message[MaxBufferSize * 2];
+    bool isSpectator = false;
+    int seed = 0;
+
+    printf("Client starting...\n");
+
+    // Initialize Winsock
     if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
-        fprintf(stderr, "Fatal Error: WSAStartup failed with code %d\n", WSAGetLastError());
+        printf("WSAStartup failed.\n");
         return 1;
     }
 
-    // CREATE SOCKET CHECK
-    SOCKET socket_network = socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+    // Create UDP socket
+    socket_network = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (socket_network == INVALID_SOCKET) {
-        fprintf(stderr, "Fatal Error: Could not create socket: %d\n", WSAGetLastError());
+        printf("socket() failed.\n");
         WSACleanup();
         return 1;
     }
-    printf("Socket is created!\n");
 
-    // Address Setup (No direct error check needed here for assignment)
-    struct sockaddr_in server_address;
-    struct sockaddr_in from_server; 
-    int add_len = sizeof(from_server);
+    // Setup server address
     server_address.sin_family = AF_INET;
     server_address.sin_port = htons(9002);
     server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    char buffer[MaxBufferSize]; 
-    char receive[MaxBufferSize];
-    int byte_received;
-    int message_len;
-    int seed = 0;
-    bool isSpectator = false;
-    
-    do{
-        memset(receive,0,MaxBufferSize);
-        
-        // --- SELECT CHECK ---
-        fd_set read; 
-        struct timeval timeout;
-        
-        FD_ZERO(&read);
-        FD_SET(socket_network,&read);
-        printf("\nChecking if there is a message from server");
-        timeout.tv_sec = 2;
-        timeout.tv_usec = 2;
-        
-        int activity = select(0,&read,NULL,NULL,&timeout);
+    printf("Type HANDSHAKE_REQUEST or SPECTATOR_REQUEST\n");
 
+    // Send initial request
+    if (fgets(buffer, MaxBufferSize, stdin) != NULL) {
+        clean_newline(buffer);
+        sendto(socket_network, buffer, strlen(buffer), 0, (SOCKADDR*)&server_address, sizeof(server_address));
+    }
+
+    printf("Waiting for server response...\n");
+
+    while (1) {
+        /* -----------------------------
+           1. Check for incoming messages
+        ------------------------------ */
+        fd_set readfds;
+        struct timeval timeout;
+        FD_ZERO(&readfds);
+        FD_SET(socket_network, &readfds);
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 10000; // 10 ms
+
+        int activity = select(0, &readfds, NULL, NULL, &timeout);
         if (activity == SOCKET_ERROR) {
-            fprintf(stderr, "\nCritical Error: select failed with code %d\n", WSAGetLastError());
-            break; // Exit loop on critical select error
+            printf("select() error\n");
+            break;
         }
-        
-        if(activity > 0){
-            printf("\nThere is an activity");
-            
-            // RECVFROM CHECK
-            byte_received = recvfrom(socket_network,receive,sizeof(receive),0,(SOCKADDR *)&from_server,&add_len);
-            
-            if(byte_received == SOCKET_ERROR){
-                fprintf(stderr, "Client Error: recvfrom failed with code %d\n", WSAGetLastError());
-            }
-            else if(byte_received > 0){
-                // SUCCESS: Message received
+
+        if (FD_ISSET(socket_network, &readfds)) {
+            memset(receive, 0, MaxBufferSize);
+            int byte_received = recvfrom(socket_network, receive, sizeof(receive), 0, (SOCKADDR*)&from_server, &from_len);
+
+            if (byte_received > 0) {
                 receive[byte_received] = '\0';
-                char *message = get_message_type(receive);
-                
-                // --- Message Processing (Remains the same) ---
-                if(message){
-                    if(strncmp(message,"HANDSHAKE_RESPONSE",strlen("HANDSHAKE_RESPONSE")) == 0){
-                        // ... (Seed extraction logic)
-                        printf("\nClient: HANDSHAKE response received.\n");
+                char *msg = get_message_type(receive);
+                if (msg) {
+                    if (!strncmp(msg, "HANDSHAKE_RESPONSE", 19)) {
+                        char *seed_ptr = strstr(receive, "seed:");
+                        if (seed_ptr) sscanf(seed_ptr, "seed: %d", &seed);
+                        printf("\n[SERVER] Handshake OK (seed=%d)\n", seed);
                     }
-                    else if(strncmp(message,"SPECTATOR_RESPONSE",strlen("SPECTATOR_RESPONSE")) == 0){
-                        printf("\nClient: Joined as spectator.\n");
+                    else if (!strncmp(msg, "SPECTATOR_RESPONSE", 18)) {
+                        printf("\n[SERVER] You are now a Spectator.\n");
                         isSpectator = true;
                     }
-                    else{
-                        printf("\nClient: Received Battle Update: %s\n", message);
+                    else {
+                        printf("\n[UPDATE] %s\n", msg);
                     }
                 }
-                
-                continue; // Go back to check for more queued data
             }
-            // If byte_received == 0, it generally means success with no data, fall through.
-        }
-        else{
-            printf("\nNo activity");
-        }
-        
-        // --- INPUT STREAM RECOVERY ---
-        if (feof(stdin) || ferror(stdin)) {
-            clearerr(stdin); 
         }
 
-        // --- USER INPUT ---
-        if(!isSpectator){
-            printf("\nmessage_type: ");
-        }
-        else{
-            printf("\nSpectator (Chat Only): \n");
-        }
-        
-        char *input_status = fgets(buffer, MaxBufferSize, stdin);
-        
-        if (input_status == NULL) {
-            // Unrecoverable input error (EOF/critical failure)
-            fprintf(stderr, "Client Input Warning: Input stream failure. Exiting loop.\n");
-            break; // Use break here as the terminal stream is dead
-        }
-        
-        // Serialization
-        message_len = strlen(buffer);
-        if (message_len > 0 && buffer[message_len - 1] == '\n') {
-            buffer[message_len - 1] = '\0';
-            message_len--;
-        }
+        /* -----------------------------
+           2. Check for keyboard input
+        ------------------------------ */
+        if (isSpectator) {
+            if (_kbhit()) {
+                printf("\nSpectator (Chat only): ");
+                if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
+                clean_newline(buffer);
+                if (strlen(buffer) == 0) continue;
 
-        char full_message[MaxBufferSize + 16]; 
-        sprintf(full_message, "message_type: %s", buffer);
-        
-        // --- SENDTO CHECK ---
-        printf("\nClient: Data to be sent: %s\n", full_message);
-        printf("\nSending data....");
-        
-        message_len = strlen(full_message);
-        
-        // Check if the message is empty (e.g., user just hit Enter)
-        if (message_len > 0) {
-            if (sendto(socket_network, full_message, message_len, 0, (SOCKADDR *)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
-                fprintf(stderr, "Client Send Error: sendto failed with code %d\n", WSAGetLastError());
-            } else {
-                printf("SUCCESS\n");
+                sprintf(full_message, "message_type: CHAT_MESSAGE %s", buffer);
+                sendto(socket_network, full_message, strlen(full_message), 0, (SOCKADDR*)&server_address, sizeof(server_address));
+                printf("\n[SENT] %s\n", full_message);
             }
-        } else {
-            printf("SKIPPED (Empty message)\n");
         }
-        
-        fflush(stdin); // Non-standard clean-up
+        else {
+            printf("\nEnter message_type or BATTLE_SETUP: ");
+            if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
+            clean_newline(buffer);
+            if (strlen(buffer) == 0) continue;
 
-    } while(1); 
-    
-    // CLEANUP CHECK
-    if (closesocket(socket_network) == SOCKET_ERROR) {
-        fprintf(stderr, "Cleanup Error: closesocket failed with code %d\n", WSAGetLastError());
+            if (strcmp(buffer, "BATTLE_SETUP") == 0) {
+                // --- Gather BATTLE_SETUP info ---
+                while (1) {
+                    printf("communication_mode (P2P/BROADCAST): ");
+                    if (fgets(setup.communicationMode, sizeof(setup.communicationMode), stdin) == NULL) continue;
+                    clean_newline(setup.communicationMode);
+                    if (strcmp(setup.communicationMode, "P2P") != 0 && strcmp(setup.communicationMode, "BROADCAST") != 0) {
+                        printf("Invalid mode. Try again.\n");
+                        continue;
+                    }
+
+                    printf("pokemon_name: ");
+                    if (fgets(setup.pokemonName, sizeof(setup.pokemonName), stdin) == NULL) continue;
+                    clean_newline(setup.pokemonName);
+
+                    char stats_boosts[MaxBufferSize];
+                    printf("stat_boosts (e.g., {\"special_attack_uses\": 3, \"special_defenses_uses\": 2}): ");
+                    if (fgets(stats_boosts, MaxBufferSize, stdin) == NULL) continue;
+                    clean_newline(stats_boosts);
+
+                    char *atk = strstr(stats_boosts, "\"special_attack_uses\": ");
+                    char *def = strstr(stats_boosts, "\"special_defenses_uses\": ");
+                    if (!atk || !def) {
+                        printf("Invalid stat format.\n");
+                        continue;
+                    }
+
+                    sscanf(atk, "\"special_attack_uses\": %d", &setup.boosts.specialAttack);
+                    sscanf(def, "\"special_defenses_uses\": %d", &setup.boosts.specialDefense);
+
+                    sprintf(full_message,
+                        "message_type: BATTLE_SETUP\n"
+                        "communication_mode: %s\n"
+                        "pokemon_name: %s\n"
+                        "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }\n",
+                        setup.communicationMode,
+                        setup.pokemonName,
+                        setup.boosts.specialAttack,
+                        setup.boosts.specialDefense
+                    );
+
+                    // --- Send message ---
+                    if (strcmp(setup.communicationMode, "BROADCAST") == 0) {
+                        struct sockaddr_in broadcastAddr;
+                        broadcastAddr.sin_family = AF_INET;
+                        broadcastAddr.sin_port = htons(9002);
+                        broadcastAddr.sin_addr.s_addr = inet_addr("255.255.255.255");
+
+                        int broadcastEnable = 1;
+                        setsockopt(socket_network, SOL_SOCKET, SO_BROADCAST, (char*)&broadcastEnable, sizeof(broadcastEnable));
+
+                        sendto(socket_network, full_message, strlen(full_message), 0, (SOCKADDR*)&broadcastAddr, sizeof(broadcastAddr));
+                        printf("\n[BROADCAST SENT]\n%s\n", full_message);
+                    } else {
+                        sendto(socket_network, full_message, strlen(full_message), 0, (SOCKADDR*)&server_address, sizeof(server_address));
+                        printf("\n[P2P SENT]\n%s\n", full_message);
+                    }
+                    break; // exit BATTLE_SETUP loop
+                }
+            }
+            else {
+                sprintf(full_message, "message_type: %s", buffer);
+                sendto(socket_network, full_message, strlen(full_message), 0, (SOCKADDR*)&server_address, sizeof(server_address));
+                printf("\n[SENT] %s\n", full_message);
+            }
+        }
     }
-    if (WSACleanup() == SOCKET_ERROR) {
-        fprintf(stderr, "Cleanup Error: WSACleanup failed with code %d\n", WSAGetLastError());
-    }
+
+    closesocket(socket_network);
+    WSACleanup();
     return 0;
 }

@@ -1,0 +1,15 @@
+How to compile and run: 
+
+gcc udp_client.c -o joiner.exe -lws2_32
+
+gcc udp_server.c -o host.exe -lws2_32
+
+Then run in this order:
+
+> host
+
+
+> joiner (either spectator or joiner)
+
+
+> joiner (joiner or spectator)
