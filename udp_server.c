@@ -7,6 +7,11 @@
 #include <string.h>
 #define MaxBufferSize 1024
 #pragma comment(lib,"ws2_32.lib")
+
+// global variables
+bool spectActive = false;
+SOCKADDR_IN SpectatorADDR;
+int SpectatorAddrSize = sizeof(SpectatorADDR);
 // returns the string after the message_type 
 char *get_message_type(char *message){
     char *message_type = strstr(message,"message_type: ");
@@ -15,6 +20,13 @@ char *get_message_type(char *message){
     }
     return NULL;
 }
+
+void spectatorUpdate(char *updateMessage, SOCKET socket){
+    if(spectActive){
+        sendto(socket,updateMessage,strlen(updateMessage),0,(SOCKADDR *)&SpectatorADDR,SpectatorAddrSize);
+        printf("\nUpdate sent to the spectator");
+    }
+}
 int main(){
     WSADATA wsa;
     char receive[MaxBufferSize];
@@ -22,6 +34,8 @@ int main(){
     int SenderAddrSize = sizeof(SenderAddr);
     int ByteReceived=0;
     char response[MaxBufferSize];
+    
+
     //start Winsock
     if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
         printf("Failed! Error code: %d\n", WSAGetLastError());
@@ -93,13 +107,22 @@ int main(){
                 sendto(receiving_socket,response,strlen(response),0,(SOCKADDR *)&SenderAddr,SenderAddrSize);
                 printf("A Handshake response has been sent with a seed of %d", seed);
             }   
+            else if(strcmp(message,"SPECTATOR_REQUEST") == 0){
+                printf("Server: Spectator request has been received\n");
+                SpectatorADDR = SenderAddr;
+                spectActive = true;
+                sprintf(response,"message_type: SPECTATOR_RESPONSE");
+                sendto(receiving_socket,response,strlen(response),0,(SOCKADDR *)&SpectatorADDR,SpectatorAddrSize);
+                printf("A Spectator response has been sent!");
+            }  
             else {
-                printf("Server: Received %d bytes\n", ByteReceived);
+                spectatorUpdate(message,receiving_socket);
+                printf("\nServer: Received %d bytes\n", ByteReceived);
                 printf("Server: The data is: %s\n", receive);
                 printf("\n");
             }
         }
-   } while(flag);
+   } while(flag); // can be changed
    closesocket(receiving_socket);
    WSACleanup();
 }
