@@ -68,14 +68,15 @@ int main() {
     server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     printf("Type HANDSHAKE_REQUEST or SPECTATOR_REQUEST\n");
-
+    printf("To chat in spectator mode, press any key in your keyboard\n");
+    printf("message_type: ");
     // Send initial request
     if (fgets(buffer, MaxBufferSize, stdin) != NULL) {
         clean_newline(buffer);
-        sendto(socket_network, buffer, strlen(buffer), 0, (SOCKADDR*)&server_address, sizeof(server_address));
+        sprintf(full_message,"message_type: %s", buffer);
+        sendto(socket_network, full_message, strlen(full_message), 0, (SOCKADDR*)&server_address, sizeof(server_address));
     }
 
-    printf("Waiting for server response...\n");
 
     while (1) {
         /* -----------------------------
@@ -134,7 +135,7 @@ int main() {
             }
         }
         else {
-            printf("\nEnter message_type or BATTLE_SETUP: ");
+            printf("\nmessage_type: ");
             if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
             clean_newline(buffer);
             if (strlen(buffer) == 0) continue;

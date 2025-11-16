@@ -35,31 +35,34 @@ int main() {
     SOCKADDR_IN SenderAddr;
     int SenderAddrSize = sizeof(SenderAddr);
 
+    printf("Server starting...\n");
+
     if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
         printf("Failed! Error code: %d\n", WSAGetLastError());
         return 1;
     }
 
-    // Server setup
     SOCKET server_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (server_socket == INVALID_SOCKET) {
         printf("Server: socket() error: %d\n", WSAGetLastError());
+        WSACleanup();
         return -1;
     }
 
     SOCKADDR_IN server_address;
     server_address.sin_family = AF_INET;
     server_address.sin_port = htons(9002);
+    
     server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     if (bind(server_socket, (SOCKADDR *)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
-        printf("Server: bind() failed\n");
+        printf("Server: bind() failed: %d\n", WSAGetLastError());
         closesocket(server_socket);
         WSACleanup();
         return -1;
     }
 
-    printf("Server ready. Listening...\n");
+    printf("Server ready. Listening on port 9002...\n");
 
     bool running = true;
 
@@ -68,9 +71,11 @@ int main() {
         memset(response, 0, MaxBufferSize);
 
         int ByteReceived = recvfrom(server_socket, receive, sizeof(receive), 0,
-                                    (SOCKADDR *)&SenderAddr, &SenderAddrSize);
+                                     (SOCKADDR *)&SenderAddr, &SenderAddrSize);
 
         if (ByteReceived <= 0) continue;
+        
+        receive[ByteReceived] = '\0'; 
 
         char *msg = get_message_type(receive);
         if (!msg) continue;
@@ -80,11 +85,12 @@ int main() {
             running = false;
         }
         else if (strcmp(msg, "HANDSHAKE_REQUEST") == 0) {
-            printf("[SERVER] Handshake Request received.\n");
+            printf("[SERVER] Handshake Request received.\n"); // Prints receive confirmation
 
             int seed = 12345;
             sprintf(response, "message_type: HANDSHAKE_RESPONSE\nseed: %d", seed);
 
+            // Sends response back to the client's address (SenderAddr)
             sendto(server_socket, response, strlen(response), 0,
                    (SOCKADDR *)&SenderAddr, SenderAddrSize);
 
@@ -100,14 +106,13 @@ int main() {
                    (SOCKADDR *)&SpectatorADDR, SpectatorAddrSize);
         }
         else {
-            // broadcast to spectator
             spectatorUpdate(receive, server_socket);
-
             printf("\n[SERVER] Received (%d bytes): %s\n", ByteReceived, receive);
         }
     }
 
     closesocket(server_socket);
     WSACleanup();
+    printf("Server shut down.\n");
     return 0;
 }
