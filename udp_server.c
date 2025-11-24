@@ -10,10 +10,29 @@
 #include "pokemon_data.h"
 
 #define MaxBufferSize 1024
+#define MaxClients 10
 #pragma comment(lib,"ws2_32.lib")
 
 #define RESEND_TIMEOUT_MS 500
 #define MAX_RETRIES 3
+typedef struct {
+    int specialAttack;
+    int specialDefense;
+} StatBoosts;
+
+typedef struct {
+    char communicationMode[32]; // P2P or BROADCAST
+    char pokemonName[64];
+    StatBoosts boosts;
+} BattleSetupData;
+
+typedef struct{
+    struct sockaddr_in addr; 
+    int addr_len;             
+    bool active;
+    bool isSpectator;
+    BattleSetupData battlesetup;
+} Player;
 
 bool spectActive = false;
 SOCKADDR_IN SpectatorADDR;
@@ -108,7 +127,28 @@ void send_ack(SOCKET sock, int seq, const struct sockaddr_in *to, int tolen) {
         printf("[SERVER] Sent ACK seq=%d\n", seq);
     }
 }
-
+// [udp_server.c]
+// Helper function to find a client index based on their address
+int checkClients(struct sockaddr_in SenderAddr, Player clients[MaxClients]) {
+    for (int i = 0; i < MaxClients; i++) {
+        // First check if the slot is active
+        if (clients[i].active) {
+            
+            // Compare the IP address (s_addr is an unsigned long, safe to compare with ==)
+            if (clients[i].addr.sin_addr.s_addr == SenderAddr.sin_addr.s_addr) {
+                
+                // Compare the Port number (sin_port is a short, safe to compare with ==)
+                if (clients[i].addr.sin_port == SenderAddr.sin_port) {
+                    
+                    // Both IP and Port match, this is the client
+                    return i;
+                }
+            }
+        }
+    }
+    // Client not found
+    return -1; 
+}
 // forward to spectator (reliably if possible)
 void spectatorUpdateReliable(const char *updateMessage, SOCKET socket) {
     if (!spectActive) return;
@@ -131,6 +171,11 @@ int main() {
     char response[MaxBufferSize * 2];
     struct sockaddr_in SenderAddr;
     int SenderAddrSize = sizeof(SenderAddr);
+    Player clients[MaxClients]; // includes players and spectators
+    int counter = 0; // counter for clients
+    for (int i = 0; i < MaxClients; i++) {
+        clients[i].active = false;
+    }
 
     printf("Server starting...\n");
 
@@ -145,11 +190,17 @@ int main() {
         WSACleanup();
         return -1;
     }
+    
+    int broadcastEnable = 1;
+    if (setsockopt(server_socket, SOL_SOCKET, SO_BROADCAST,
+                (char*)&broadcastEnable, sizeof(broadcastEnable)) < 0) {
+        printf("setsockopt(SO_BROADCAST) failed: %d\n", WSAGetLastError());
+    }
 
     struct sockaddr_in server_address;
     server_address.sin_family = AF_INET;
     server_address.sin_port = htons(9002);
-    server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server_address.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(server_socket, (SOCKADDR *)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
         printf("Server: bind() failed: %d\n", WSAGetLastError());
@@ -189,7 +240,7 @@ int main() {
 
             char *msg = get_message_type(receive);
             if (!msg) continue;
-
+            printf("Message: %s",msg);
             // If it's an ACK, parse seq and clear pending if matches
             if (!strncmp(msg, "ACK", 3)) {
                 int ack_seq = get_seq_from_message(receive);
@@ -215,17 +266,100 @@ int main() {
             }
             else if (strcmp(msg, "HANDSHAKE_REQUEST") == 0) {
                 printf("[SERVER] Handshake Request received.\n");
-                int seed = 12345;
-                sprintf(response, "message_type: HANDSHAKE_RESPONSE\nseed: %d", seed);
-                // send sequenced (so client can ACK)
-                send_sequenced_message(server_socket, response, &SenderAddr, SenderAddrSize);
+                
+                int clientIndex = checkClients(SenderAddr, clients);
+                
+                if (clientIndex == -1) {
+                    // Find the next available slot for a new client
+                    int newClientIndex = -1;
+                    for (int i = 0; i < MaxClients; i++) {
+                        if (!clients[i].active) {
+                            newClientIndex = i;
+                            break;
+                        }
+                    }
+
+                    if (newClientIndex != -1) {
+                        int seed = 12345;
+                        sprintf(response, "message_type: HANDSHAKE_RESPONSE\nseed: %d", seed);
+                        
+                        // Store new client's address and set as active
+                        clients[newClientIndex].addr = SenderAddr;
+                        clients[newClientIndex].active = true;
+                        clients[newClientIndex].isSpectator = false;
+                        clients[newClientIndex].addr_len = SenderAddrSize;
+                        
+                        // **Print the address here for the new connection**
+                        char *sender_ip = inet_ntoa(SenderAddr.sin_addr);
+                        int sender_port = ntohs(SenderAddr.sin_port);
+                        printf("[SERVER] New Player Index %d. Address: %s, Port: %d\n", newClientIndex, sender_ip, sender_port);
+                        
+                        send_sequenced_message(server_socket, response, &SenderAddr, SenderAddrSize);
+                    } else {
+                        printf("[SERVER] Max clients reached. Dropping HANDSHAKE_REQUEST.\n");
+                    }
+                } else {
+                    printf("[SERVER] Known client (Index %d) re-sent HANDSHAKE_REQUEST.\n", clientIndex);
+                }
             }
             else if (strcmp(msg, "SPECTATOR_REQUEST") == 0) {
                 printf("[SERVER] Spectator Request received.\n");
-                SpectatorADDR = SenderAddr;
-                spectActive = true;
-                sprintf(response, "message_type: SPECTATOR_RESPONSE");
-                send_sequenced_message(server_socket, response, &SpectatorADDR, SpectatorAddrSize);
+                
+                int clientIndex = checkClients(SenderAddr, clients);
+                
+                if (clientIndex == -1) {
+                    // Find the next available slot for a new client (Spectator)
+                    int newClientIndex = -1;
+                    for (int i = 0; i < MaxClients; i++) {
+                        if (!clients[i].active) {
+                            newClientIndex = i;
+                            break;
+                        }
+                    }
+
+                    if (newClientIndex != -1) {
+                        // **Save the Spectator's address globally for updates**
+                        SpectatorADDR = SenderAddr; 
+                        SpectatorAddrSize = SenderAddrSize;
+                        spectActive = true;
+                        
+                        // Store new client's address and set as active
+                        clients[newClientIndex].addr = SenderAddr;
+                        clients[newClientIndex].active = true;
+                        clients[newClientIndex].isSpectator = true;
+                        clients[newClientIndex].addr_len = SenderAddrSize;
+                        
+                        // **Print the address here for the new connection**
+                        char *sender_ip = inet_ntoa(SenderAddr.sin_addr);
+                        int sender_port = ntohs(SenderAddr.sin_port);
+                        printf("[SERVER] New Spectator Index %d. Address: %s, Port: %d\n", newClientIndex, sender_ip, sender_port);
+                        
+                        sprintf(response, "message_type: SPECTATOR_RESPONSE");
+                        // Send response to the client that just sent the request
+                        send_sequenced_message(server_socket, response, &SpectatorADDR, SpectatorAddrSize); 
+                    } else {
+                        printf("[SERVER] Max clients reached. Dropping SPECTATOR_REQUEST.\n");
+                    }
+                } else {
+                    printf("[SERVER] Known client (Index %d) re-sent SPECTATOR_REQUEST.\n", clientIndex);
+                }
+            }
+            else if(strncmp(msg, "BATTLE_SETUP", 12) == 0){
+                printf("[SERVER] Battle Setup received\n");
+                int index = checkClients(SenderAddr,clients);
+                
+                if (index != -1) {
+                    char *sender_ip = inet_ntoa(SenderAddr.sin_addr);
+                    int sender_port = ntohs(SenderAddr.sin_port);
+                    printf("[SERVER] Battle Setup from known client Index %d. Address: %s, Port: %d\n", index, sender_ip, sender_port);
+
+                    // TODO: Extract and store BATTLE_SETUP data here
+                    
+                    // Forward to spectator (if active)
+                    spectatorUpdateReliable(receive, server_socket);
+                } else {
+                    printf("[SERVER] Battle Setup received from UNKNOWN client. Ignoring.\n");
+                }
             }
             else {
                 // Forward message to spectator (reliably)

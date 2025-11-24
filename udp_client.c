@@ -355,8 +355,13 @@ int main() {
                         broadcastAddr.sin_addr.s_addr = inet_addr("255.255.255.255");
 
                         int broadcastEnable = 1;
-                        setsockopt(socket_network, SOL_SOCKET, SO_BROADCAST, (char*)&broadcastEnable, sizeof(broadcastEnable));
-
+                        int ret = setsockopt(socket_network, SOL_SOCKET, SO_BROADCAST, (char*)&broadcastEnable, sizeof(broadcastEnable));
+                        if(ret){
+                            printf("Successful");
+                        }
+                        else{
+                            printf("Not successful");
+                        }
                         // for broadcast, destination is broadcastAddr
                         send_sequenced_message(socket_network, full_message, &broadcastAddr, sizeof(broadcastAddr));
                         printf("\n[BROADCAST SEND REQUESTED]\n%s\n", full_message);
