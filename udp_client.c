@@ -1,5 +1,3 @@
-// UPDATED udp_client.c (by Rob Rogacion - 11/23/2025 - 5:19 PM)
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +6,9 @@
 #include <stdbool.h>
 #include <conio.h>
 #include <windows.h>
+
+//file loads Pokemon data
+#include "pokemon_data.h"
 
 #pragma comment(lib,"ws2_32.lib")
 
@@ -181,6 +182,8 @@ int main() {
     server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     init_pending();
+
+    loadPokemonCSV("pokemon.csv"); //load data into program
 
     printf("Type HANDSHAKE_REQUEST or SPECTATOR_REQUEST\n");
     printf("To chat in spectator mode, press any key in your keyboard\n");

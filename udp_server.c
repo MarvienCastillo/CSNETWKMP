@@ -1,5 +1,3 @@
-// UPDATED udp_server.c (by Rob Rogacion - 11/23/2025 - 5:21 PM)
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,6 +5,9 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+
+//file loads Pokemon data
+#include "pokemon_data.h"
 
 #define MaxBufferSize 1024
 #pragma comment(lib,"ws2_32.lib")
@@ -160,6 +161,8 @@ int main() {
     init_pending();
 
     printf("Server ready. Listening on port 9002...\n");
+
+    loadPokemonCSV("pokemon.csv"); //load data into program
 
     bool running = true;
 
