@@ -6,6 +6,25 @@ int get_msg_type(char *msg, char *type_str) {
     return (strstr(msg, type_str) != NULL);
 }
 
+static Move moveDatabase[] = {
+    { "Tackle", "PHYSICAL", 40.0f, "Normal" },
+    { "Thunderbolt", "SPECIAL",  90.0f, "Electric" },
+    { "Flamethrower", "SPECIAL", 90.0f,  "Fire" },
+    { "Quick Attack", "PHYSICAL", 40.0f, "Normal" },
+    { "Water Gun", "SPECIAL",  40.0f,  "Water" },
+    { "Vine Whip", "PHYSICAL", 45.0f, "Grass" }
+};
+
+static int moveCount = sizeof(moveDatabase) / sizeof(Move);
+
+Move* getMoveData(const char* moveName) {
+    for (int i = 0; i < moveCount; i++) {
+        if (strcasecmp(moveDatabase[i].name, moveName) == 0)
+            return &moveDatabase[i];
+    }
+    return NULL;
+}
+
 void extract_value(char *msg, char *key, char *dest) {
     char search[50];
     sprintf(search, "%s: ", key);
@@ -69,9 +88,22 @@ void process_incoming_packet(BattleContext *ctx, char *msg, char *response_buffe
             
             ctx->currentState = STATE_PROCESSING_TURN;
             
-            int dmg = 20; 
+            /*int dmg = 20; 
             int remaining_hp = ctx->oppPokemon.hp - dmg;
-            if(remaining_hp < 0) remaining_hp = 0;
+            if(remaining_hp < 0) remaining_hp = 0;*/
+
+            Move *mv = getMoveData(ctx -> lastMoveUsed);
+
+            if (!mv) {
+               printf("[ERROR] Move '%s' not found! Using default power.\n", ctx->lastMoveUsed);
+                static Move fallback = {"Tackle", "PHYSICAL", 40, "normal"};
+                mv = &fallback;
+            }
+
+            int dmg = calculate_damage(&ctx->myPokemon, &ctx->oppPokemon, mv);
+            int remaining_hp = ctx->oppPokemon.hp - dmg;
+            if (remaining_hp < 0) 
+                remaining_hp = 0;
 
             sprintf(response_buffer, 
                 "message_type: CALCULATION_REPORT\n"

@@ -43,6 +43,7 @@ void init_battle(BattleContext *ctx, int isHost, char *myPokeName);
 void process_incoming_packet(BattleContext *ctx, char *msg, char *response_buffer);
 void process_user_input(BattleContext *ctx, char *input, char *output_buffer);
 
+extern Move* getMoveData(const char* moveName);
 int calculate_damage (Pokemon *attacker, Pokemon *defender, Move *move);
 float get_type_multiplier(const char *moveType, const char *defType);
 
