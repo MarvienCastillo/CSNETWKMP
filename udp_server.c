@@ -5,6 +5,11 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include "battle_setup.h"
+#include "attack_announce.h"
+#include "defense_announce.h"
+#include "calculation_report.h"
+#include "calculation_confirm.h"
 
 //file loads Pokemon data
 #include "pokemon_data.h"
@@ -15,16 +20,18 @@
 
 #define RESEND_TIMEOUT_MS 500
 #define MAX_RETRIES 3
-typedef struct {
-    int specialAttack;
-    int specialDefense;
-} StatBoosts;
 
-typedef struct {
-    char communicationMode[32]; // P2P or BROADCAST
-    char pokemonName[64];
-    StatBoosts boosts;
-} BattleSetupData;
+typedef enum {
+    TURN_IDLE,
+    TURN_WAIT_DEFENSE,
+    TURN_WAIT_CALC_REPORT,
+    TURN_WAIT_CALC_CONFIRM
+} TurnState;
+
+TurnState currentTurnState = TURN_IDLE;
+int lastSeq = 0;   // Track the sequence number for the current turn
+CalculationReport localCalcReport; // store your own calculated damage
+
 
 typedef struct{
     struct sockaddr_in addr; 
@@ -127,25 +134,14 @@ void send_ack(SOCKET sock, int seq, const struct sockaddr_in *to, int tolen) {
         printf("[SERVER] Sent ACK seq=%d\n", seq);
     }
 }
-// [udp_server.c]
+
 // Helper function to find a client index based on their address
 int checkClients(struct sockaddr_in SenderAddr, Player clients[MaxClients]) {
     for (int i = 0; i < MaxClients; i++) {
-        // First check if the slot is active
-        if (clients[i].active) {
-            
-            // Compare the IP address (s_addr is an unsigned long, safe to compare with ==)
-            if (clients[i].addr.sin_addr.s_addr == SenderAddr.sin_addr.s_addr) {
-                
-                // Compare the Port number (sin_port is a short, safe to compare with ==)
-                if (clients[i].addr.sin_port == SenderAddr.sin_port) {
-                    
-                    // Both IP and Port match, this is the client
-                    return i;
-                }
-            }
-        }
+        if (clients[i].active && clients[i].addr.sin_addr.s_addr == SenderAddr.sin_addr.s_addr)
+            return i;
     }
+
     // Client not found
     return -1; 
 }
@@ -318,7 +314,7 @@ int main() {
                     }
 
                     if (newClientIndex != -1) {
-                        // **Save the Spectator's address globally for updates**
+                        // Save the Spectator's address globally for updates
                         SpectatorADDR = SenderAddr; 
                         SpectatorAddrSize = SenderAddrSize;
                         spectActive = true;
@@ -347,14 +343,65 @@ int main() {
             else if(strncmp(msg, "BATTLE_SETUP", 12) == 0){
                 printf("[SERVER] Battle Setup received\n");
                 int index = checkClients(SenderAddr,clients);
-                
+                 int senderIndex = checkClients(SenderAddr, clients);
+
+    // 2. Relay message to all other active players (excluding sender and spectators)
+    for (int i = 0; i < MaxClients; i++) {
+        if (clients[i].active && i != senderIndex && !clients[i].isSpectator) {
+            int sent = sendto(server_socket, receive, ByteReceived, 0,
+                              (struct sockaddr*)&clients[i].addr,
+                              clients[i].addr_len);
+            if (sent == SOCKET_ERROR) {
+                printf("[SERVER] Failed to relay to player %d: %d\n", i, WSAGetLastError());
+            } else {
+                printf("[SERVER] Relayed message to player %d\n", i);
+            }
+        }
+    }
+
+    // 3. Forward message to spectator (if any)
+    spectatorUpdateReliable(receive, server_socket);
+
+    // Optional: debug prints for protocol messages
+    if (strncmp(msg, "ATTACK_ANNOUNCE", 15) == 0) {
+        printf("[SERVER] Attack announced from player %d\n", senderIndex);
+    } else if (strncmp(msg, "DEFENSE_ANNOUNCE", 16) == 0) {
+        printf("[SERVER] Defense announced from player %d\n", senderIndex);
+    } else if (strncmp(msg, "CALCULATION_REPORT", 18) == 0) {
+        printf("[SERVER] Calculation report received from player %d\n", senderIndex);
+    } else if (strncmp(msg, "CALCULATION_CONFIRM", 19) == 0) {
+        printf("[SERVER] Calculation confirm received from player %d\n", senderIndex);
+    }
                 if (index != -1) {
                     char *sender_ip = inet_ntoa(SenderAddr.sin_addr);
                     int sender_port = ntohs(SenderAddr.sin_port);
                     printf("[SERVER] Battle Setup from known client Index %d. Address: %s, Port: %d\n", index, sender_ip, sender_port);
 
-                    // TODO: Extract and store BATTLE_SETUP data here
-                    
+                   
+        // Extract communication mode
+        char *cmode = strstr(receive, "communication_mode: ");
+        if (cmode) sscanf(cmode, "communication_mode: %s", clients[index].battlesetup.communicationMode);
+
+        // Extract Pokemon name
+        char *pname = strstr(receive, "pokemon_name: ");
+        if (pname) sscanf(pname, "pokemon_name: %s", clients[index].battlesetup.pokemonName);
+
+        // Extract stat boosts
+        char *stats = strstr(receive, "stat_boosts: ");
+        if (stats) {
+            sscanf(stats, "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }",
+                   &clients[index].battlesetup.boosts.specialAttack,
+                   &clients[index].battlesetup.boosts.specialDefense);
+        }
+
+        // Print formatted Battle Setup
+        printf("          Pokemon: %s\n", clients[index].battlesetup.pokemonName);
+        printf("          Mode   : %s\n", clients[index].battlesetup.communicationMode);
+        printf("          Boosts : ATK=%d, DEF=%d\n",
+               clients[index].battlesetup.boosts.specialAttack,
+               clients[index].battlesetup.boosts.specialDefense);
+     
+
                     // Forward to spectator (if active)
                     spectatorUpdateReliable(receive, server_socket);
                 } else {
