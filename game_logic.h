@@ -5,7 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "pokemon_data.h" 
+#include "pokemon_data.h"
 
 #define MAX_MSG_SIZE 1024
 #define TIMEOUT_MS 500
@@ -32,8 +32,18 @@ typedef struct {
     int currentSequenceNum; 
 } BattleContext;
 
+typedef struct {
+    char name[64];
+    char damage_category[16];
+    int base_power;
+    char type[32];
+} Move;
+
 void init_battle(BattleContext *ctx, int isHost, char *myPokeName);
 void process_incoming_packet(BattleContext *ctx, char *msg, char *response_buffer);
 void process_user_input(BattleContext *ctx, char *input, char *output_buffer);
+
+int calculate_damage (Pokemon *attacker, Pokemon *defender, Move *move);
+float get_type_multiplier(const char *moveType, const char *defType);
 
 #endif

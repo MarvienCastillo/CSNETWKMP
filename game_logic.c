@@ -1,4 +1,6 @@
 #include "game_logic.h"
+#include <string.h>
+#include <ctype.h>
 
 int get_msg_type(char *msg, char *type_str) {
     return (strstr(msg, type_str) != NULL);
@@ -137,4 +139,68 @@ void process_user_input(BattleContext *ctx, char *input, char *output_buffer) {
     } else {
         printf("[GAME] Not your turn or wrong state!\n");
     }
+}
+
+float get_type_multiplier(const char *moveType, const char *defType) {
+    if (defType == NULL || strlen(defType) == 0)
+        return 1.0f;
+    
+    int i;
+    char m[32], d[32]; //convert lowercase for consistent comparison
+    for (i = 0; moveType[i]; i++)
+        m[i] = tolower(moveType[i]);
+    
+    m[strlen(moveType)] = '\0';
+
+    for (i = 0; defType[i]; i++)
+        d[i] = tolower(defType[i]);
+
+    d[strlen(defType)] = '\0';
+
+    if (strcmp(m, "fire") == 0 && 
+        strcmp(d, "grass") == 0)
+            return 2.0f;
+    else if (strcmp(m, "fire") == 0 &&
+             strcmp(d, "water") == 0)
+            return 0.5f;
+    else if (strcmp(m, "electric") == 0 &&
+             strcmp(d, "water") == 0)
+            return 2.0f;
+    else if (strcmp(m, "electric") == 0 &&
+             strcmp(d, "ground") == 0)
+            return 0.0f;
+
+    return 1.0f;
+}
+
+int calculate_damage(Pokemon *attacker, Pokemon *defender, Move *move) {
+    int A = 0; //attack
+    int D = 0; //defense
+
+    if (strcmp(move->damage_category, "PHYSICAL") == 0) {
+        A = attacker->attack;
+        D = defender->defense;
+    }
+    else {
+        A = attacker->sp_attack;
+        D = defender->sp_defense;
+    }
+
+    if (A <= 0) 
+        A = 1;
+    if (D <= 0) 
+        D = 1;
+
+    float base = ((2 * 50 / 5 + 2) * move->base_power * (float)A / D) / 50 + 2;
+
+    //type effectiveness applied
+    float m1 = get_type_multiplier(move->type, defender->type1);
+    float m2 = get_type_multiplier(move->type, defender->type2);
+
+    float finalDamage = base * m1 * m2;
+
+    if (finalDamage < 1.0f)
+        finalDamage = 1.0f;
+
+    return (int)finalDamage;
 }
