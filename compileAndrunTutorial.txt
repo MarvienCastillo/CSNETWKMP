@@ -1,9 +1,9 @@
 How to compile and run: 
 
-gcc udp_client.c -o client.exe -lws2_32
+gcc udp_server.c game_logic.c -o server.exe -lws2_32
 
-gcc udp_server.c -o server.exe -lws2_32
 
+gcc udp_client.c game_logic.c -o client.exe -lws2_32
 Then run in this order:
 
 > host
