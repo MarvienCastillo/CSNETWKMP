@@ -6,11 +6,6 @@
 #include <stdbool.h>
 #include <conio.h>
 #include <windows.h>
-#include "battle_setup.h"
-#include "attack_announce.h"
-#include "defense_announce.h"
-#include "calculation_report.h"
-#include "calculation_confirm.h"
 
 #include "game_logic.h"
 #include "pokemon_data.h"
@@ -21,24 +16,16 @@
 #define RESEND_TIMEOUT_MS 500
 #define MAX_RETRIES 3
 
-typedef enum {
-    TURN_IDLE,
-    TURN_WAIT_DEFENSE,
-    TURN_WAIT_CALC_REPORT,
-    TURN_WAIT_CALC_CONFIRM
-} TurnState;
+typedef struct {
+    int specialAttack;
+    int specialDefense;
+} StatBoosts;
 
-<<<<<<< HEAD
 typedef struct {
     char communicationMode[32]; //P2P or BROADCAST
     char pokemonName[64];
     StatBoosts boosts;
 } BattleSetupData;
-=======
-TurnState currentTurnState = TURN_IDLE;
-int lastSeq = 0;   // Track the sequence number for the current turn
-CalculationReport localCalcReport; // store your own calculated damage
->>>>>>> origin/csnetwk1
 
 typedef struct {
     bool occupied;
@@ -104,7 +91,6 @@ int send_sequenced_message(SOCKET sock, const char *payload, struct sockaddr_in 
         printf("[CLIENT] Cannot send: another message is waiting for ACK (seq=%d)\n", pending.seq);
         return -1;
     }
-<<<<<<< HEAD
 
     // Build payload with reply tag if missing
     char tagged_payload[MaxBufferSize * 2];
@@ -115,9 +101,6 @@ int send_sequenced_message(SOCKET sock, const char *payload, struct sockaddr_in 
         snprintf(tagged_payload, sizeof(tagged_payload), "reply: 1\n%s", payload);
     }
 
-=======
-    static int next_seq = 1; // new server maintains its own seq number
->>>>>>> origin/csnetwk1
     int myseq = next_seq++;
     char composed[MaxBufferSize * 2];
     snprintf(composed, sizeof(composed), "%s\nseq: %d", tagged_payload, myseq);
@@ -169,11 +152,6 @@ int main() {
     char full_message[MaxBufferSize * 2];
     bool isSpectator = false;
     int seed = 0;
-     char moveName[64];              // for attack
-    CalculationReport report;       // for calculation report
-    char defenseName[64];           // for defense
-    int blockValue;                 // for defense block value
-    int successFlag;                // for calculation confirm
 
     BattleContext ctx;
     char responseBuf[MaxBufferSize];
@@ -202,11 +180,7 @@ int main() {
     server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     init_pending();
-<<<<<<< HEAD
     loadPokemonCSV("pokemon.csv");
-=======
-    loadPokemonCSV("pokemon.csv"); //load data into program
->>>>>>> origin/csnetwk1
 
     printf("Type HANDSHAKE_REQUEST or SPECTATOR_REQUEST\n");
     printf("message_type: ");
@@ -230,24 +204,16 @@ int main() {
             printf("select() error\n");
             break;
         }
-if (FD_ISSET(socket_network, &readfds)) {
-    memset(receive, 0, sizeof(receive));
-    int byte_received = recvfrom(socket_network, receive, sizeof(receive)-1, 0, (SOCKADDR*)&from_server, &from_len);
 
-<<<<<<< HEAD
         if (FD_ISSET(socket_network, &readfds)) {
             memset(receive, 0, sizeof(receive));
             int byte_received = recvfrom(socket_network, receive, sizeof(receive) - 1, 0, (SOCKADDR*)&from_server, &from_len);
-=======
-    if (byte_received > 0) {
-        receive[byte_received] = '\0';
->>>>>>> origin/csnetwk1
 
-        // get message type
-        char *msg = get_message_type(receive);
-        if (!msg) continue;
+            if (byte_received > 0) {
+                receive[byte_received] = '\0';
+                char *msg = get_message_type(receive);
+                if (!msg) continue;
 
-<<<<<<< HEAD
                 // If ACK - clear pending if matches
                 if (!strncmp(msg, "ACK", 3)) {
                     int ack_seq = get_seq_from_message(receive);
@@ -288,18 +254,7 @@ if (FD_ISSET(socket_network, &readfds)) {
                 else {
                     printf("\n[UPDATE] %s\n", msg);
                 }
-=======
-        // --- ACK Handling ---
-        if (!strncmp(msg, "ACK", 3)) {
-            int ack_seq = get_seq_from_message(receive);
-            if (ack_seq >= 0 && pending.occupied && ack_seq == pending.seq) {
-                printf("\n[RECEIVED ACK seq=%d] Clearing pending.\n", ack_seq);
-                pending.occupied = false;
-            } else {
-                printf("\n[RECEIVED ACK seq=%d] (no matching pending)\n", ack_seq);
->>>>>>> origin/csnetwk1
             }
-            continue;
         }
         // update prompt state
         if (ctx.currentState != lastState || ctx.isMyTurn != lastTurn) {
@@ -308,68 +263,7 @@ if (FD_ISSET(socket_network, &readfds)) {
             lastTurn = ctx.isMyTurn;
         }
 
-<<<<<<< HEAD
         // Retransmission logic
-=======
-        // --- Send ACK for sequenced messages ---
-        int incoming_seq = get_seq_from_message(receive);
-        if (incoming_seq >= 0) {
-            send_ack(socket_network, incoming_seq, &from_server, from_len);
-        }
-
-        // --- Application-level messages ---
-        if (!strncmp(msg, "HANDSHAKE_RESPONSE", 18)) {
-            char *seed_ptr = strstr(receive, "seed:");
-            if (seed_ptr) sscanf(seed_ptr, "seed: %d", &seed);
-            printf("\n[SERVER] Handshake OK (seed=%d)\n", seed);
-        }
-        else if (!strncmp(msg, "SPECTATOR_RESPONSE", 18)) {
-            printf("\n[SERVER] You are now a Spectator.\n");
-            isSpectator = true;
-        }
-        else if (!strncmp(msg, "ATTACK_ANNOUNCE", 15)) {
-            int result = receiveAttackAnnounce(receive, moveName);
-            if (result == 0) {
-                printf("[SERVER] Attack announced: %s\n", moveName);
-            } else {
-                printf("[SERVER] Failed to parse attack announcement.\n");
-            }
-        }
-        else if (!strncmp(msg, "DEFENSE_ANNOUNCE", 16)) {
-            int result = receiveDefenseAnnounce(receive, defenseName, &blockValue); // pass array correctly
-            if (result == 0) {
-                printf("[SERVER] Defense announced: %s, block=%d\n", defenseName, blockValue);
-            } else {
-                printf("[SERVER] Failed to parse defense announcement.\n");
-            }
-            
-        }
-        else if (!strncmp(msg, "CALCULATION_REPORT", 18)) {
-            int result = receiveCalculationReport(receive, &report);
-            if (result == 0) {
-                printf("[SERVER] Damage calculated: %d\n", report.damage); // use correct struct field
-            } else {
-                printf("[SERVER] Failed to parse calculation report.\n");
-            }
-        }
-        else if (!strncmp(msg, "CALCULATION_CONFIRM", 19)) {
-            int result = receiveCalculationConfirm(receive, &successFlag);
-            if (result == 0) {
-                printf("[SERVER] Calculation confirmed: %s\n", successFlag ? "YES" : "NO");
-            } else {
-                printf("[SERVER] Failed to parse calculation confirmation.\n");
-            }
-        }
-        else {
-            printf("\n[UPDATE] %s\n", msg);
-        }
-    }
-}
-    
-        /* -----------------------------
-        2. Retransmission logic for pending outgoing message
-        ------------------------------ */
->>>>>>> origin/csnetwk1
         if (pending.occupied) {
             DWORD now = GetTickCount();
             if ((now - pending.last_sent_ms) >= RESEND_TIMEOUT_MS) {
@@ -386,17 +280,7 @@ if (FD_ISSET(socket_network, &readfds)) {
                 }
             }
         }
-/* -----------------------------
-   3. Keyboard input & send protocol messages
------------------------------- */
-if (isSpectator) {
-    if (_kbhit()) {
-        printf("\nSpectator (Chat only): ");
-        if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
-        clean_newline(buffer);
-        if (strlen(buffer) == 0) continue;
 
-<<<<<<< HEAD
         // User input (only when no pending outstanding message)
         if (!pending.occupied) {
             if (isSpectator) {
@@ -477,152 +361,9 @@ if (isSpectator) {
                     }
                 }
             }
-=======
-        sprintf(full_message, "message_type: CHAT_MESSAGE\ncontent: %s", buffer);
-        send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
-    }
-} 
-
-else {
-    printf("\nmessage_type: ");
-    if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
-    clean_newline(buffer);
-    if (strlen(buffer) == 0) continue;
-
-    // BATTLE_SETUP
-    if (strcmp(buffer, "BATTLE_SETUP") == 0) {
-        while (1) {
-            printf("communication_mode (P2P/BROADCAST): ");
-            if (fgets(setup.communicationMode, sizeof(setup.communicationMode), stdin) == NULL) continue;
-            clean_newline(setup.communicationMode);
-            if (strcmp(setup.communicationMode, "P2P") != 0 && strcmp(setup.communicationMode, "BROADCAST") != 0) {
-                printf("Invalid mode. Try again.\n");
-                continue;
-            }
-
-            printf("pokemon_name: ");
-            if (fgets(setup.pokemonName, sizeof(setup.pokemonName), stdin) == NULL) continue;
-            clean_newline(setup.pokemonName);
-
-            char stats_boosts[MaxBufferSize];
-            printf("stat_boosts (e.g., {\"special_attack_uses\": 3, \"special_defenses_uses\": 2}): ");
-            if (fgets(stats_boosts, MaxBufferSize, stdin) == NULL) continue;
-            clean_newline(stats_boosts);
-
-            char *atk = strstr(stats_boosts, "\"special_attack_uses\": ");
-            char *def = strstr(stats_boosts, "\"special_defenses_uses\": ");
-            if (!atk || !def) {
-                printf("Invalid stat format.\n");
-                continue;
-            }
-            sscanf(atk, "\"special_attack_uses\": %d", &setup.boosts.specialAttack);
-            sscanf(def, "\"special_defenses_uses\": %d", &setup.boosts.specialDefense);
-
-            sprintf(full_message,
-                "message_type: BATTLE_SETUP\n"
-                "communication_mode: %s\n"
-                "pokemon_name: %s\n"
-                "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }\n",
-                setup.communicationMode,
-                setup.pokemonName,
-                setup.boosts.specialAttack,
-                setup.boosts.specialDefense
-            );
-
-            if (strcmp(setup.communicationMode, "BROADCAST") == 0) {
-                struct sockaddr_in broadcastAddr;
-                broadcastAddr.sin_family = AF_INET;
-                broadcastAddr.sin_port = htons(9002);
-                broadcastAddr.sin_addr.s_addr = inet_addr("255.255.255.255");
-                int broadcastEnable = 1;
-                setsockopt(socket_network, SOL_SOCKET, SO_BROADCAST, (char*)&broadcastEnable, sizeof(broadcastEnable));
-
-                send_sequenced_message(socket_network, full_message, &broadcastAddr, sizeof(broadcastAddr));
-                printf("\n[BROADCAST BATTLE_SETUP SENT]\n%s\n", full_message);
-            } else {
-                send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
-                printf("\n[P2P BATTLE_SETUP SENT]\n%s\n", full_message);
-            }
-            break;
->>>>>>> origin/csnetwk1
         }
     }
-    // ATTACK_ANNOUNCE
-    else if (strcmp(buffer, "ATTACK_ANNOUNCE") == 0) {
-        printf("Enter your move: ");
-        if (fgets(moveName, sizeof(moveName), stdin) == NULL) continue;
-        clean_newline(moveName);
 
-        sprintf(full_message,
-            "message_type: ATTACK_ANNOUNCE\n"
-            "move_name: %s\n"
-            "sequence_number: %d",
-            moveName, next_seq
-        );
-        send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
-        lastSeq = next_seq++;
-        currentTurnState = TURN_WAIT_DEFENSE;
-    }
-
-    // DEFENSE_ANNOUNCE
-    else if (strcmp(buffer, "DEFENSE_ANNOUNCE") == 0 || currentTurnState == TURN_WAIT_DEFENSE) {
-        printf("Enter your defense: ");
-        if (fgets(defenseName, sizeof(defenseName), stdin) == NULL) continue;
-        clean_newline(defenseName);
-
-        sprintf(full_message,
-            "message_type: DEFENSE_ANNOUNCE\n"
-            "defense_name: %s\n"
-            "sequence_number: %d",
-            defenseName, next_seq
-        );
-        send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
-        lastSeq = next_seq++;
-        currentTurnState = TURN_WAIT_CALC_REPORT;
-    }
-
-    // CALCULATION_REPORT
-    else if (strcmp(buffer, "CALCULATION_REPORT") == 0 || currentTurnState == TURN_WAIT_CALC_REPORT) {
-        int damage = 20;  // example damage
-        int remaining_hp = 80;
-
-        sprintf(full_message,
-            "message_type: CALCULATION_REPORT\n"
-            "attacker: %s\n"
-            "move_used: %s\n"
-            "remaining_health: %d\n"
-            "damage_dealt: %d\n"
-            "defender_hp_remaining: %d\n"
-            "status_message: %s used %s!\n"
-            "sequence_number: %d",
-            setup.pokemonName, moveName, remaining_hp, damage,
-            remaining_hp - damage, setup.pokemonName, moveName, next_seq
-        );
-        send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
-        lastSeq = next_seq++;
-        currentTurnState = TURN_WAIT_CALC_CONFIRM;
-        printf("[CLIENT] Calculation report sent.\n");
-    }
-
-    // CALCULATION_CONFIRM
-    else if (strcmp(buffer, "CALCULATION_CONFIRM") == 0 || currentTurnState == TURN_WAIT_CALC_CONFIRM) {
-        sprintf(full_message,
-            "message_type: CALCULATION_CONFIRM\n"
-            "sequence_number: %d",
-            next_seq
-        );
-        send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
-        lastSeq = next_seq++;
-        currentTurnState = TURN_IDLE;
-        printf("[CLIENT] Calculation confirmation sent.\n");
-    }
-
-    else {
-        sprintf(full_message, "message_type: %s", buffer);
-        send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
-    }
-}
-    }
     closesocket(socket_network);
     WSACleanup();
     return 0;
