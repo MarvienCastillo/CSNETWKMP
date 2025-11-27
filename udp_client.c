@@ -7,10 +7,7 @@
 #include <conio.h>
 #include <windows.h>
 #include "battle_setup.h"
-#include "attack_announce.h"
-#include "defense_announce.h"
-#include "calculation_report.h"
-#include "calculation_confirm.h"
+#include "game_logic.h"
 
 //file loads Pokemon data
 #include "pokemon_data.h"
@@ -28,6 +25,14 @@ typedef enum {
     TURN_WAIT_CALC_CONFIRM
 } TurnState;
 
+
+typedef struct{
+    struct sockaddr_in addr; 
+    int addr_len;             
+    bool active;
+    bool isSpectator;
+    BattleSetupData battlesetup;
+} Player;
 TurnState currentTurnState = TURN_IDLE;
 int lastSeq = 0;   // Track the sequence number for the current turn
 CalculationReport localCalcReport; // store your own calculated damage
@@ -55,7 +60,6 @@ void init_pending() {
     pending.last_sent_ms = 0;
     pending.dest_len = 0;
 }
-
 // Extract message after "message_type: "
 char *get_message_type(char *message) {
     char *msg = strstr(message, "message_type: ");
@@ -88,6 +92,7 @@ bool message_has_seq(const char *message) {
 void build_ack_message(char *out, int seq) {
     sprintf(out, "message_type: ACK\nseq: %d", seq);
 }
+
 
 // send raw bytes (no seq appended)
 // used internally to send retransmits / ACKs
@@ -152,7 +157,26 @@ void send_ack(SOCKET sock, int seq, const struct sockaddr_in *to, int tolen) {
         printf("[SENT ACK seq=%d]\n", seq);
     }
 }
+// for broadcasting messages
+void send_broadcast_message(SOCKET sock, const char *payload) {
+    // 1. Setup the Broadcast Address
+    struct sockaddr_in broadcastAddr;
+    broadcastAddr.sin_family = AF_INET;
+    broadcastAddr.sin_port = htons(9002);
+    // Use the standard broadcast address for the local network
+    broadcastAddr.sin_addr.s_addr = inet_addr("255.255.255.255");
 
+    // 2. Enable the Broadcast Option on the Socket (if not already done)
+    int broadcastEnable = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (char*)&broadcastEnable, sizeof(broadcastEnable)) < 0) {
+        printf("[CLIENT] Error enabling broadcast: %d\n", WSAGetLastError());
+        return;
+    }
+
+    // 3. Send the message reliably
+    send_sequenced_message(sock, payload, &broadcastAddr, sizeof(broadcastAddr));
+    printf("\n[BROADCAST SENT]\n");
+}
 int main() {
     WSADATA wsa;
     SOCKET socket_network;
@@ -389,8 +413,7 @@ else {
             if (strcmp(setup.communicationMode, "BROADCAST") == 0) {
                 struct sockaddr_in broadcastAddr;
                 broadcastAddr.sin_family = AF_INET;
-                broadcastAddr.sin_port = htons(9002);
-                broadcastAddr.sin_addr.s_addr = inet_addr("255.255.255.255");
+                // ... (Original setup logic)
                 int broadcastEnable = 1;
                 setsockopt(socket_network, SOL_SOCKET, SO_BROADCAST, (char*)&broadcastEnable, sizeof(broadcastEnable));
 

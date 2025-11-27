@@ -6,10 +6,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include "battle_setup.h"
-#include "attack_announce.h"
-#include "defense_announce.h"
-#include "calculation_report.h"
-#include "calculation_confirm.h"
+#include "game_logic.h"
 
 //file loads Pokemon data
 #include "pokemon_data.h"
