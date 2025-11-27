@@ -369,41 +369,40 @@ int main() {
     } else if (strncmp(msg, "CALCULATION_CONFIRM", 19) == 0) {
         printf("[SERVER] Calculation confirm received from player %d\n", senderIndex);
     }
-                if (index != -1) {
-                    char *sender_ip = inet_ntoa(SenderAddr.sin_addr);
-                    int sender_port = ntohs(SenderAddr.sin_port);
-                    printf("[SERVER] Battle Setup from known client Index %d. Address: %s, Port: %d\n", index, sender_ip, sender_port);
+        if (index != -1) {
+            char *sender_ip = inet_ntoa(SenderAddr.sin_addr);
+            int sender_port = ntohs(SenderAddr.sin_port);
+            printf("[SERVER] Battle Setup from known client Index %d. Address: %s, Port: %d\n", index, sender_ip, sender_port);
 
-                   
-        // Extract communication mode
-        char *cmode = strstr(receive, "communication_mode: ");
-        if (cmode) sscanf(cmode, "communication_mode: %s", clients[index].battlesetup.communicationMode);
+                        
+            // Extract communication mode
+            char *cmode = strstr(receive, "communication_mode: ");
+            if (cmode) sscanf(cmode, "communication_mode: %s", clients[index].battlesetup.communicationMode);
 
-        // Extract Pokemon name
-        char *pname = strstr(receive, "pokemon_name: ");
-        if (pname) sscanf(pname, "pokemon_name: %s", clients[index].battlesetup.pokemonName);
+            // Extract Pokemon name
+            char *pname = strstr(receive, "pokemon_name: ");
+            if (pname) sscanf(pname, "pokemon_name: %s", clients[index].battlesetup.pokemonName);
 
-        // Extract stat boosts
-        char *stats = strstr(receive, "stat_boosts: ");
-        if (stats) {
-            sscanf(stats, "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }",
-                   &clients[index].battlesetup.boosts.specialAttack,
-                   &clients[index].battlesetup.boosts.specialDefense);
-        }
+            // Extract stat boosts
+            char *stats = strstr(receive, "stat_boosts: ");
+            if (stats) {
+                sscanf(stats, "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }",
+                        &clients[index].battlesetup.boosts.specialAttack,
+                        &clients[index].battlesetup.boosts.specialDefense);
+            }
 
-        // Print formatted Battle Setup
-        printf("          Pokemon: %s\n", clients[index].battlesetup.pokemonName);
-        printf("          Mode   : %s\n", clients[index].battlesetup.communicationMode);
-        printf("          Boosts : ATK=%d, DEF=%d\n",
-               clients[index].battlesetup.boosts.specialAttack,
-               clients[index].battlesetup.boosts.specialDefense);
-     
-
-                    // Forward to spectator (if active)
-                    spectatorUpdateReliable(receive, server_socket);
-                } else {
-                    printf("[SERVER] Battle Setup received from UNKNOWN client. Ignoring.\n");
-                }
+            // Print formatted Battle Setup
+            printf("          Pokemon: %s\n", clients[index].battlesetup.pokemonName);
+            printf("          Mode   : %s\n", clients[index].battlesetup.communicationMode);
+            printf("          Boosts : ATK=%d, DEF=%d\n",
+            clients[index].battlesetup.boosts.specialAttack,
+            clients[index].battlesetup.boosts.specialDefense);
+    
+                // Forward to spectator (if active)
+                spectatorUpdateReliable(receive, server_socket);
+            } else {
+                printf("[SERVER] Battle Setup received from UNKNOWN client. Ignoring.\n");
+            }
             }
             else {
                 // Forward message to spectator (reliably)
