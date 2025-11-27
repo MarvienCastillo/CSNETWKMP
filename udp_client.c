@@ -22,7 +22,7 @@ typedef struct {
 } StatBoosts;
 
 typedef struct {
-    char communicationMode[32];  //P2P or BROADCAST
+    char communicationMode[32]; //P2P or BROADCAST
     char pokemonName[64];
     StatBoosts boosts;
 } BattleSetupData;
@@ -79,14 +79,31 @@ int raw_sendto(SOCKET s, const char *buf, int len, const struct sockaddr_in *to,
     return sendto(s, buf, len, 0, (SOCKADDR*)to, tolen);
 }
 
+// returns true if message contains a reply: header (any value)
+bool message_has_reply_tag(const char *payload) {
+    return strstr(payload, "reply:") != NULL;
+}
+
+// central sequenced send: ensures reply tag exists (unless already present),
+// appends seq:, and puts message into the single outstanding pending slot
 int send_sequenced_message(SOCKET sock, const char *payload, struct sockaddr_in *dest, int dest_len) {
     if (pending.occupied) {
         printf("[CLIENT] Cannot send: another message is waiting for ACK (seq=%d)\n", pending.seq);
         return -1;
     }
+
+    // Build payload with reply tag if missing
+    char tagged_payload[MaxBufferSize * 2];
+    if (message_has_reply_tag(payload)) {
+        strncpy(tagged_payload, payload, sizeof(tagged_payload) - 1);
+        tagged_payload[sizeof(tagged_payload)-1] = '\0';
+    } else {
+        snprintf(tagged_payload, sizeof(tagged_payload), "reply: 1\n%s", payload);
+    }
+
     int myseq = next_seq++;
     char composed[MaxBufferSize * 2];
-    snprintf(composed, sizeof(composed), "%s\nseq: %d", payload, myseq);
+    snprintf(composed, sizeof(composed), "%s\nseq: %d", tagged_payload, myseq);
 
     pending.occupied = true;
     pending.seq = myseq;
@@ -119,6 +136,11 @@ void send_ack(SOCKET sock, int seq, const struct sockaddr_in *to, int tolen) {
     }
 }
 
+// detect reply-markers to avoid reply-bounce loops (incoming)
+bool message_is_reply(const char *message) {
+    return strstr(message, "reply: 1") != NULL || strstr(message, "reply:") != NULL;
+}
+
 int main() {
     WSADATA wsa;
     SOCKET socket_network;
@@ -131,15 +153,13 @@ int main() {
     bool isSpectator = false;
     int seed = 0;
 
-
     BattleContext ctx;
     char responseBuf[MaxBufferSize];
-    init_battle(&ctx, 0, "JoinerPokemon"); 
-    
+    init_battle(&ctx, 0, "JoinerPokemon");
+
     GameState lastState = ctx.currentState;
     int lastTurn = ctx.isMyTurn;
     bool promptPrinted = false;
-
 
     printf("Client starting...\n");
 
@@ -164,10 +184,10 @@ int main() {
 
     printf("Type HANDSHAKE_REQUEST or SPECTATOR_REQUEST\n");
     printf("message_type: ");
-    
     if (fgets(buffer, MaxBufferSize, stdin) != NULL) {
         clean_newline(buffer);
         sprintf(full_message, "message_type: %s", buffer);
+        // Now all outgoing sequenced messages are auto-tagged by send_sequenced_message
         send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
     }
 
@@ -194,6 +214,7 @@ int main() {
                 char *msg = get_message_type(receive);
                 if (!msg) continue;
 
+                // If ACK - clear pending if matches
                 if (!strncmp(msg, "ACK", 3)) {
                     int ack_seq = get_seq_from_message(receive);
                     if (ack_seq >= 0 && pending.occupied && ack_seq == pending.seq) {
@@ -203,17 +224,23 @@ int main() {
                     continue;
                 }
 
+                // If incoming message contains seq:, always send an ACK
                 int incoming_seq = get_seq_from_message(receive);
                 if (incoming_seq >= 0) {
                     send_ack(socket_network, incoming_seq, &from_server, from_len);
                 }
 
+                // Process game logic (always update state)
                 process_incoming_packet(&ctx, receive, responseBuf);
-                if (strlen(responseBuf) > 0) {
+
+                // Only send a sequenced response if process_incoming_packet produced something
+                // and the incoming message is NOT already a reply (avoid echo)
+                if (strlen(responseBuf) > 0 && !message_is_reply(receive)) {
+                    // send_sequenced_message will automatically add reply: 1
                     send_sequenced_message(socket_network, responseBuf, &server_address, sizeof(server_address));
                 }
-            
 
+                // Application-level prints
                 if (!strncmp(msg, "HANDSHAKE_RESPONSE", 18)) {
                     char *seed_ptr = strstr(receive, "seed:");
                     if (seed_ptr) sscanf(seed_ptr, "seed: %d", &seed);
@@ -229,13 +256,15 @@ int main() {
                 }
             }
         }
-        
+
+        // update prompt state
         if (ctx.currentState != lastState || ctx.isMyTurn != lastTurn) {
             promptPrinted = false;
             lastState = ctx.currentState;
             lastTurn = ctx.isMyTurn;
         }
 
+        // Retransmission logic
         if (pending.occupied) {
             DWORD now = GetTickCount();
             if ((now - pending.last_sent_ms) >= RESEND_TIMEOUT_MS) {
@@ -253,6 +282,7 @@ int main() {
             }
         }
 
+        // User input (only when no pending outstanding message)
         if (!pending.occupied) {
             if (isSpectator) {
                 if (_kbhit()) {
@@ -261,6 +291,7 @@ int main() {
                     clean_newline(buffer);
                     if (strlen(buffer) == 0) continue;
                     sprintf(full_message, "message_type: CHAT_MESSAGE\nsender_name: Spec\nmessage_text: %s", buffer);
+                    // send_sequenced_message will tag as reply:1 automatically
                     send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
                 }
             }
@@ -281,9 +312,9 @@ int main() {
                         process_user_input(&ctx, buffer, responseBuf);
                         if (strlen(responseBuf) > 0) {
                             send_sequenced_message(socket_network, responseBuf, &server_address, sizeof(server_address));
-                            promptPrinted = false; 
+                            promptPrinted = false;
                         }
-                        continue; 
+                        continue;
                     }
 
                     if (strcmp(buffer, "BATTLE_SETUP") == 0) {
@@ -291,7 +322,7 @@ int main() {
                             printf("communication_mode (P2P/BROADCAST): ");
                             if (fgets(setup.communicationMode, sizeof(setup.communicationMode), stdin) == NULL) continue;
                             clean_newline(setup.communicationMode);
-                            
+
                             printf("pokemon_name: ");
                             if (fgets(setup.pokemonName, sizeof(setup.pokemonName), stdin) == NULL) continue;
                             clean_newline(setup.pokemonName);
@@ -304,18 +335,21 @@ int main() {
                                 setup.communicationMode,
                                 setup.pokemonName
                             );
+                            // user-initiated -> send (auto-tagged in send_sequenced_message)
                             send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
                             break;
                         }
                     }
                     else {
                         sprintf(full_message, "message_type: %s", buffer);
+                        // user-initiated -> send (auto-tagged)
                         send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
                     }
                 }
             }
         }
     }
+
     closesocket(socket_network);
     WSACleanup();
     return 0;
