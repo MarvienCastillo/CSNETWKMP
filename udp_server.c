@@ -9,6 +9,7 @@
 
 #include "game_logic.h"
 #include "pokemon_data.h"
+#include "BattleManager.h"
 
 #define MaxBufferSize 1024
 #define MaxClients 10
@@ -191,8 +192,7 @@ int main() {
 
     BattleContext ctx;
     char logicResponseBuf[MaxBufferSize];
-
-    init_battle(&ctx, 1, "HostPokemon");
+    init_battle(&ctx, 1, "Pikachu"); 
 
     GameState lastState = ctx.currentState;
     int lastTurn = ctx.isMyTurn;

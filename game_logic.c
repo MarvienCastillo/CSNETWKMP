@@ -1,6 +1,7 @@
 #include "game_logic.h"
 #include <string.h>
 #include <ctype.h>
+#include "pokemon_data.h"
 
 int get_msg_type(char *msg, char *type_str) {
     return (strstr(msg, type_str) != NULL);
@@ -23,21 +24,6 @@ Move* getMoveData(const char* moveName) {
             return &moveDatabase[i];
     }
     return NULL;
-}
-
-void extract_value(char *msg, char *key, char *dest) {
-    char search[50];
-    sprintf(search, "%s: ", key);
-    char *start = strstr(msg, search);
-    if (start) {
-        start += strlen(search);
-        int i = 0;
-        while (start[i] != '\n' && start[i] != '\0' && start[i] != '\r') {
-            dest[i] = start[i];
-            i++;
-        }
-        dest[i] = '\0';
-    }
 }
 
 void init_battle(BattleContext *ctx, int isHost, char *myPokeName) {

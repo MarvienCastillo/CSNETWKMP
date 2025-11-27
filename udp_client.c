@@ -9,6 +9,7 @@
 
 #include "game_logic.h"
 #include "pokemon_data.h"
+#include "BattleManager.h"
 
 #pragma comment(lib,"ws2_32.lib")
 
@@ -54,13 +55,6 @@ char *get_message_type(char *message) {
     char *msg = strstr(message, "message_type: ");
     if (msg) return msg + 14;
     return NULL;
-}
-
-void clean_newline(char *str) {
-    size_t len = strlen(str);
-    if (len > 0 && (str[len - 1] == '\n' || str[len - 1] == '\r')) str[len - 1] = '\0';
-    len = strlen(str);
-    if (len > 0 && str[len - 1] == '\r') str[len - 1] = '\0';
 }
 
 int get_seq_from_message(const char *message) {
@@ -155,10 +149,14 @@ int main() {
 
     BattleContext ctx;
     char responseBuf[MaxBufferSize];
-    init_battle(&ctx, 0, "JoinerPokemon");
+    //char chosenPokemon[64];
+    init_battle(&ctx, 0, "Charmander");
 
-    GameState lastState = ctx.currentState;
-    int lastTurn = ctx.isMyTurn;
+    BattleManager bm;
+    BattleManager_Init(&bm, 0, "Charmander");
+
+    GameState lastState = bm.ctx.currentState;
+    int lastTurn = bm.ctx.isMyTurn;
     bool promptPrinted = false;
 
     printf("Client starting...\n");
@@ -220,7 +218,11 @@ int main() {
                     if (ack_seq >= 0 && pending.occupied && ack_seq == pending.seq) {
                         printf("\n[RECEIVED ACK seq=%d] Clearing pending.\n", ack_seq);
                         pending.occupied = false;
-                    }
+                        if (!isSpectator) {
+                        printf("message_type: ");
+                        fflush(stdout);
+        }
+    }
                     continue;
                 }
 
@@ -230,15 +232,13 @@ int main() {
                     send_ack(socket_network, incoming_seq, &from_server, from_len);
                 }
 
-                // Process game logic (always update state)
-                process_incoming_packet(&ctx, receive, responseBuf);
-
-                // Only send a sequenced response if process_incoming_packet produced something
-                // and the incoming message is NOT already a reply (avoid echo)
-                if (strlen(responseBuf) > 0 && !message_is_reply(receive)) {
-                    // send_sequenced_message will automatically add reply: 1
-                    send_sequenced_message(socket_network, responseBuf, &server_address, sizeof(server_address));
+                BattleManager_HandleIncoming(&bm, receive);
+                const char* outgoing = BattleManager_GetOutgoingMessage(&bm);
+                if (strlen(outgoing) > 0) {
+                    send_sequenced_message(socket_network, outgoing, &server_address, sizeof(server_address));
+                    BattleManager_ClearOutgoingMessage(&bm);
                 }
+
 
                 // Application-level prints
                 if (!strncmp(msg, "HANDSHAKE_RESPONSE", 18)) {
@@ -257,10 +257,10 @@ int main() {
             }
         }
         // update prompt state
-        if (ctx.currentState != lastState || ctx.isMyTurn != lastTurn) {
+            if (bm.ctx.currentState != lastState || bm.ctx.isMyTurn != lastTurn) {
             promptPrinted = false;
-            lastState = ctx.currentState;
-            lastTurn = ctx.isMyTurn;
+            lastState = bm.ctx.currentState;
+            lastTurn = bm.ctx.isMyTurn;
         }
 
         // Retransmission logic
@@ -295,26 +295,105 @@ int main() {
                 }
             }
             else {
-                if (ctx.currentState == STATE_WAITING_FOR_MOVE && ctx.isMyTurn) {
-                    if (!promptPrinted) {
-                        printf("\n[YOUR TURN] Enter Move Name: ");
-                        promptPrinted = true;
-                    }
-                }
+                if (bm.ctx.currentState == STATE_WAITING_FOR_MOVE && bm.ctx.isMyTurn) {
+                if (!promptPrinted) {
+        printf("\n[YOUR TURN] Enter Move Name: ");
+        promptPrinted = true;
+    }
+}
 
                 if (_kbhit()) {
-                    if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
-                    clean_newline(buffer);
-                    if (strlen(buffer) == 0) continue;
+                if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
+                clean_newline(buffer);
+                if (strlen(buffer) == 0) continue;
 
-                    if (ctx.currentState == STATE_WAITING_FOR_MOVE && ctx.isMyTurn) {
-                        process_user_input(&ctx, buffer, responseBuf);
-                        if (strlen(responseBuf) > 0) {
-                            send_sequenced_message(socket_network, responseBuf, &server_address, sizeof(server_address));
-                            promptPrinted = false;
-                        }
-                        continue;
-                    }
+                    if (strcmp(buffer, "ATTACK_ANNOUNCE") == 0) {
+                char moveName[64];
+                printf("Enter Move Name: ");
+                if (fgets(moveName, sizeof(moveName), stdin) == NULL) continue;
+                clean_newline(moveName);
+
+                snprintf(full_message, sizeof(full_message),
+                    "message_type: \"ATTACK_ANNOUNCE\"\n"
+                    "move_name: %s\n"
+                    "sequence_number: %d",
+                    moveName,
+                    ++bm.ctx.currentSequenceNum);
+
+                send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+                continue;
+            }
+
+            if (strcmp(buffer, "DEFENSE_ANNOUNCE") == 0) {
+                snprintf(full_message, sizeof(full_message),
+                    "message_type: \"DEFENSE_ANNOUNCE\"\n"
+                    "sequence_number: %d",
+                    ++bm.ctx.currentSequenceNum);
+
+                send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+                continue;
+            }
+
+            if (strcmp(buffer, "CALCULATION_REPORT") == 0) {
+                char moveUsed[64];
+                int damageDealt, remainingHP;
+
+                printf("Enter Move Used: ");
+                if (fgets(moveUsed, sizeof(moveUsed), stdin) == NULL) continue;
+                clean_newline(moveUsed);
+
+                printf("Enter Damage Dealt: ");
+                if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
+                damageDealt = atoi(buffer);
+
+                printf("Enter Defender's Remaining HP: ");
+                if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
+                remainingHP = atoi(buffer);
+
+                snprintf(full_message, sizeof(full_message),
+                    "message_type: \"CALCULATION_REPORT\"\n"
+                    "attacker: %s\n"
+                    "move_used: %s\n"
+                    "remaining_health: %d\n"
+                    "damage_dealt: %d\n"
+                    "defender_hp_remaining: %d\n"
+                    "status_message: %s used %s! It was super effective!\n"
+                    "sequence_number: %d",
+                    bm.ctx.myPokemon.name,
+                    moveUsed,
+                    bm.ctx.myPokemon.hp,
+                    damageDealt,
+                    remainingHP,
+                    bm.ctx.myPokemon.name,
+                    moveUsed,
+                    ++bm.ctx.currentSequenceNum);
+
+                send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+                continue;
+            }
+
+            if (strcmp(buffer, "CALCULATION_CONFIRM") == 0) {
+                snprintf(full_message, sizeof(full_message),
+                    "message_type: \"CALCULATION_CONFIRM\"\n"
+                    "sequence_number: %d",
+                    ++bm.ctx.currentSequenceNum);
+
+                send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+                continue;
+            }
+
+                if (bm.ctx.currentState == STATE_WAITING_FOR_MOVE && bm.ctx.isMyTurn) {
+                BattleManager_HandleUserInput(&bm, buffer);
+
+                const char* outgoing = BattleManager_GetOutgoingMessage(&bm);
+                if (strlen(outgoing) > 0) {
+                send_sequenced_message(socket_network, outgoing, &server_address, sizeof(server_address));
+                BattleManager_ClearOutgoingMessage(&bm);
+        }
+        promptPrinted = false;
+        continue;
+    }
+
 
                     if (strcmp(buffer, "BATTLE_SETUP") == 0) {
                         while (1) {
@@ -324,6 +403,9 @@ int main() {
 
                             printf("pokemon_name: ");
                             if (fgets(setup.pokemonName, sizeof(setup.pokemonName), stdin) == NULL) continue;
+                            clean_newline(setup.pokemonName);
+                        
+
                             clean_newline(setup.pokemonName);
                             char stats_boosts[MaxBufferSize];
                             printf("stat_boosts (e.g., {\"special_attack_uses\": 3, \"special_defenses_uses\": 2}): ");
@@ -358,6 +440,15 @@ int main() {
                         sprintf(full_message, "message_type: %s", buffer);
                         // user-initiated -> send (auto-tagged)
                         send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+                        
+                        int result = BattleManager_CheckWinLoss(&bm);
+                        if (result == 1) {
+                        printf("You won!\n");
+                        break;
+                        } else if (result == -1) {
+                        printf("You lost!\n");
+                        break;
+                        }
                     }
                 }
             }

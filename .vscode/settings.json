@@ -1,9 +1,12 @@
 {
     "files.associations": {
+        "*.dbclient-js": "javascript",
         "ws2tcpip.h": "c",
         "stdlib.h": "c",
         "stdbool.h": "c",
         "string.h": "c",
-        "stdio.h": "c"
+        "stdio.h": "c",
+        "pokemon_data.h": "c",
+        "battlemanager.h": "c"
     }
 }
