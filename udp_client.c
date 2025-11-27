@@ -245,7 +245,7 @@ int main() {
                     char *seed_ptr = strstr(receive, "seed:");
                     if (seed_ptr) sscanf(seed_ptr, "seed: %d", &seed);
                     printf("\n[SERVER] Handshake OK (seed=%d)\n", seed);
-                    printf("You may now type 'BATTLE_SETUP' to begin configuration.\n");
+                    printf("message_type: ");
                 }
                 else if (!strncmp(msg, "SPECTATOR_RESPONSE", 18)) {
                     printf("\n[SERVER] You are now a Spectator.\n");
@@ -256,7 +256,6 @@ int main() {
                 }
             }
         }
-
         // update prompt state
         if (ctx.currentState != lastState || ctx.isMyTurn != lastTurn) {
             promptPrinted = false;
@@ -326,14 +325,29 @@ int main() {
                             printf("pokemon_name: ");
                             if (fgets(setup.pokemonName, sizeof(setup.pokemonName), stdin) == NULL) continue;
                             clean_newline(setup.pokemonName);
+                            char stats_boosts[MaxBufferSize];
+                            printf("stat_boosts (e.g., {\"special_attack_uses\": 3, \"special_defenses_uses\": 2}): ");
+                            if (fgets(stats_boosts, MaxBufferSize, stdin) == NULL) continue;
+                            clean_newline(stats_boosts);
 
+                            char *atk = strstr(stats_boosts, "\"special_attack_uses\": ");
+                            char *def = strstr(stats_boosts, "\"special_defenses_uses\": ");
+                            if (!atk || !def) {
+                                printf("Invalid stat format.\n");
+                                continue;
+                            }
+                            // gets the integer from the string
+                            sscanf(atk, "\"special_attack_uses\": %d", &setup.boosts.specialAttack);
+                            sscanf(def, "\"special_defenses_uses\": %d", &setup.boosts.specialDefense);
                             sprintf(full_message,
                                 "message_type: BATTLE_SETUP\n"
                                 "communication_mode: %s\n"
                                 "pokemon_name: %s\n"
-                                "stat_boosts: { \"special_attack_uses\": 5, \"special_defense_uses\": 5 }\n",
+                                 "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }\n",
                                 setup.communicationMode,
-                                setup.pokemonName
+                                setup.pokemonName,
+                                setup.boosts.specialAttack,
+                                setup.boosts.specialDefense
                             );
                             // user-initiated -> send (auto-tagged in send_sequenced_message)
                             send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));

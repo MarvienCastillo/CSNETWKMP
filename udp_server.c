@@ -351,41 +351,6 @@ retransmit_check:
             lastState = ctx.currentState;
             lastTurn = ctx.isMyTurn;
         }
-
-        // HOST INPUT (ATTACK) - only when no pending outstanding message
-        if (!pending.occupied) {
-            if (ctx.currentState == STATE_WAITING_FOR_MOVE && ctx.isMyTurn) {
-                if (!promptPrinted) {
-                    printf("\n[HOST TURN] Enter Move Name: ");
-                    promptPrinted = true;
-                }
-            }
-
-            if (_kbhit()) {
-                if (fgets(inputBuffer, MaxBufferSize, stdin) != NULL) {
-                    size_t len = strlen(inputBuffer);
-                    if (len > 0 && inputBuffer[len-1] == '\n') inputBuffer[len-1] = '\0';
-
-                    if (strlen(inputBuffer) > 0) {
-                        // PROCESS HOST MOVE
-                        if (ctx.currentState == STATE_WAITING_FOR_MOVE && ctx.isMyTurn) {
-                            process_user_input(&ctx, inputBuffer, logicResponseBuf);
-
-                            if (strlen(logicResponseBuf) > 0) {
-                                // Send to JOINER (send_sequenced_message will tag)
-                                if (joinerActive) {
-                                    send_sequenced_message(server_socket, logicResponseBuf, &JoinerADDR, JoinerAddrSize);
-                                    promptPrinted = false;
-                                } else {
-                                    printf("[SERVER] Error: No opponent connected yet.\n");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         //  RETRANSMISSION LOGIC
         if (pending.occupied) {
             DWORD now = GetTickCount();
