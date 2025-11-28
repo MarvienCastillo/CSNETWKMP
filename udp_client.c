@@ -335,44 +335,52 @@ int main() {
                 send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
                 continue;
             }
+// Trigger CALCULATION_REPORT either automatically or manually
+bool triggerCalcReport = false;
 
-            if (strcmp(buffer, "CALCULATION_REPORT") == 0) {
-                char moveUsed[64];
-                int damageDealt, remainingHP;
+if (bm.ctx.currentState == STATE_WAITING_FOR_MOVE && bm.ctx.isMyTurn && strlen(bm.ctx.lastMoveUsed) > 0) {
+    triggerCalcReport = true;
+}
 
-                printf("Enter Move Used: ");
-                if (fgets(moveUsed, sizeof(moveUsed), stdin) == NULL) continue;
-                clean_newline(moveUsed);
+if (strcmp(buffer, "CALCULATION_REPORT") == 0) {
+    if (strlen(bm.ctx.lastMoveUsed) > 0) {
+        triggerCalcReport = true;
+    } else {
+        printf("No move recorded yet to send CALCULATION_REPORT.\n");
+    }
+}
 
-                printf("Enter Damage Dealt: ");
-                if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
-                damageDealt = atoi(buffer);
+if (triggerCalcReport) {
+    char* moveUsed = bm.ctx.lastMoveUsed;
 
-                printf("Enter Defender's Remaining HP: ");
-                if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
-                remainingHP = atoi(buffer);
+    int damageDealt = bm.ctx.oppPokemon.prevHp - bm.ctx.oppPokemon.hp;
+    if (damageDealt < 0) damageDealt = 0;
 
-                snprintf(full_message, sizeof(full_message),
-                    "message_type: \"CALCULATION_REPORT\"\n"
-                    "attacker: %s\n"
-                    "move_used: %s\n"
-                    "remaining_health: %d\n"
-                    "damage_dealt: %d\n"
-                    "defender_hp_remaining: %d\n"
-                    "status_message: %s used %s! It was super effective!\n"
-                    "sequence_number: %d",
-                    bm.ctx.myPokemon.name,
-                    moveUsed,
-                    bm.ctx.myPokemon.hp,
-                    damageDealt,
-                    remainingHP,
-                    bm.ctx.myPokemon.name,
-                    moveUsed,
-                    ++bm.ctx.currentSequenceNum);
+    int remainingHP = bm.ctx.oppPokemon.hp;
 
-                send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
-                continue;
-            }
+    snprintf(full_message, sizeof(full_message),
+        "message_type: CALCULATION_REPORT\n"
+        "attacker: %s\n"
+        "move_used: %s\n"
+        "remaining_health: %d\n"
+        "damage_dealt: %d\n"
+        "defender_hp_remaining: %d\n"
+        "status_message: %s used %s! It was super effective!\n"
+        "sequence_number: %d",
+        bm.ctx.myPokemon.name,
+        moveUsed,
+        bm.ctx.myPokemon.hp,
+        damageDealt,
+        remainingHP,
+        bm.ctx.myPokemon.name,
+        moveUsed,
+        ++bm.ctx.currentSequenceNum);
+
+    send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+
+    bm.ctx.lastMoveUsed[0] = '\0';
+}
+
 
             if (strcmp(buffer, "CALCULATION_CONFIRM") == 0) {
                 snprintf(full_message, sizeof(full_message),

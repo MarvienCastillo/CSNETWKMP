@@ -10,6 +10,7 @@ typedef struct {
     char type1[32];
     char type2[32];
     int hp;
+    int prevHp;
     int attack;
     int defense;
     int sp_attack;
