@@ -3,6 +3,13 @@
 #include <string.h>
 #include "pokemon_data.h"
 
+
+static void handle_attack_announce(BattleManager *bm, const char *msg);
+static void handle_defense_announce(BattleManager *bm, const char *msg);
+static void handle_calculation_report(BattleManager *bm, const char *msg);
+static void handle_calculation_confirm(BattleManager *bm, const char *msg);  
+static void handle_game_over(BattleManager *bm, const char *msg);
+
 static int get_msg_type(const char *msg, const char *type_str) {
     return strstr(msg, type_str) != NULL;
 }
@@ -28,7 +35,7 @@ static void handle_game_over(BattleManager *bm, const char *msg) {
     bm->ctx.currentState = STATE_GAME_OVER;
 }
 
-// --- Sending a GAME_OVER message ---
+// Sending a GAME_OVER message
 void BattleManager_TriggerGameOver(BattleManager *bm, const char *winner, const char *loser) {
     char msg[BM_MAX_MSG_SIZE];
 
@@ -53,7 +60,7 @@ static void handle_attack_announce(BattleManager *bm, const char *msg) {
     extract_value((char*)msg, "move_name", ctx->lastMoveUsed);
     printf("[GAME] Opponent used %s! Prepare your move...\n", ctx->lastMoveUsed);
 
-    // Prepare DEFENSE_ANNOUNCE following strict format
+    // Prepare DEFENSE_ANNOUNCE
     snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
         "message_type: DEFENSE_ANNOUNCE\n"
         "sequence_number: %d\n",
@@ -127,26 +134,97 @@ static void handle_calculation_report(BattleManager *bm, const char *msg) {
 
     printf("[GAME] Received damage report. Verifying...\n");
 
-    // Strict CALCULATION_CONFIRM format
-    snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
-        "message_type: CALCULATION_CONFIRM\n"
-        "sequence_number: %d\n",
-        ++ctx->currentSequenceNum);
+    // Extract values from peer's report 
+    char peerMove[64];
+    int peerDamage, peerRemainingHP;
+    char buffer[16];
+    char attacker[64];
 
-    // Flip turn
-    ctx->isMyTurn = 1;
-    ctx->currentState = STATE_WAITING_FOR_MOVE;
-    printf("[GAME] Turn done. %s\n", ctx->isMyTurn ? "[YOUR TURN]" : "Waiting for opponent...");
+    extract_value((char *)msg, "move_used", peerMove);
+    extract_value((char *)msg, "damage_dealt", buffer); peerDamage = atoi(buffer);
+    extract_value((char *)msg, "defender_hp_remaining", buffer); peerRemainingHP = atoi(buffer);
+    extract_value((char *)msg, "attacker", attacker);
+
+    // Check for discrepancy
+    bool match = (strcmp(peerMove, ctx->lastMoveUsed) == 0) &&
+                (peerDamage == ctx->lastDamage) &&
+                (peerRemainingHP == ctx->lastRemainingHP);
+
+    if (match) {
+        snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
+            "message_type: CALCULATION_CONFIRM\n"
+            "sequence_number: %d\n",
+            ++ctx->currentSequenceNum);
+
+        // Flip turn
+        ctx->isMyTurn = 1;
+        ctx->currentState = STATE_WAITING_FOR_MOVE;
+        printf("[GAME] Turn done. %s\n", ctx->isMyTurn ? "[YOUR TURN]" : "Waiting for opponent...");
+
+    } else {
+        //  send RESOLUTION_REQUEST on mismatch
+        printf("[GAME] Discrepancy detected! Sending RESOLUTION_REQUEST...\n");
+
+        snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
+            "message_type: RESOLUTION_REQUEST\n"
+            "attacker: %s\n"
+            "move_used: %s\n"
+            "damage_dealt: %d\n"
+            "defender_hp_remaining: %d\n"
+            "sequence_number: %d\n",
+            ctx->myPokemon.name,
+            ctx->lastMoveUsed,
+            ctx->lastDamage,
+            ctx->lastRemainingHP,
+            ++ctx->currentSequenceNum);
+
+        ctx->currentState = STATE_WAITING_FOR_RESOLUTION;
+    }
+}
+static void handle_resolution_request(BattleManager *bm, const char *msg) {
+    BattleContext *ctx = &bm->ctx;
+
+    char reqMove[64];
+    int reqDamage, reqRemainingHP;
+    char attacker[64];
+    char buffer[16]; // temp buffer for numeric parsing
+
+    extract_value((char*)msg, "move_used", reqMove);
+    extract_value((char*)msg, "damage_dealt", buffer); reqDamage = atoi(buffer);
+    extract_value((char*)msg, "defender_hp_remaining", buffer); reqRemainingHP = atoi(buffer);
+    extract_value((char*)msg, "attacker", attacker);
+
+    printf("[GAME] RESOLUTION_REQUEST received from opponent.\n");
+
+    bool agree = (strcmp(reqMove, ctx->lastMoveUsed) == 0) &&
+                (reqDamage == ctx->lastDamage) &&
+                (reqRemainingHP == ctx->lastRemainingHP);
+
+    if (agree) {
+        // Send ACK
+        snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
+            "message_type: ACK\n"
+            "sequence_number: %d\n",
+            ++ctx->currentSequenceNum);
+
+        ctx->currentState = STATE_WAITING_FOR_MOVE;
+        ctx->isMyTurn = !ctx->isMyTurn;
+        printf("[GAME] RESOLUTION_REQUEST matched. State updated.\n");
+    } else {
+        printf("[ERROR] Discrepancy could not be resolved. Terminating battle.\n");
+        ctx->currentState = STATE_GAME_OVER;
+    }
 }
 
 static void handle_calculation_confirm(BattleManager *bm, const char *msg) {
     BattleContext *ctx = &bm->ctx;
-
     printf("[GAME] CALCULATION_CONFIRM received.\n");
 
+    // Flip turn
     ctx->isMyTurn = 1;
     ctx->currentState = STATE_WAITING_FOR_MOVE;
 }
+
 
 // --- Public API ---
 void BattleManager_Init(BattleManager *bm, int isHost, const char *myPokeName) {
@@ -161,6 +239,7 @@ void BattleManager_HandleIncoming(BattleManager *bm, const char *msg) {
     else if (get_msg_type(msg, "DEFENSE_ANNOUNCE")) handle_defense_announce(bm, msg);
     else if (get_msg_type(msg, "CALCULATION_REPORT")) handle_calculation_report(bm, msg);
     else if (get_msg_type(msg, "CALCULATION_CONFIRM")) handle_calculation_confirm(bm, msg);
+    else if (get_msg_type(msg, "RESOLUTION_REQUEST")) handle_resolution_request(bm, msg);
     else if (get_msg_type(msg, "GAME_OVER")) handle_game_over(bm, msg);
 }
 

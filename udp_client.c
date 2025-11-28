@@ -238,7 +238,7 @@ int main() {
                     send_sequenced_message(socket_network, outgoing, &server_address, sizeof(server_address));
                     BattleManager_ClearOutgoingMessage(&bm);
                 }
-                //  Discrepancy Resolution 
+//  Discrepancy Resolution
 if (strcmp(msg, "CALCULATION_REPORT") == 0) {
 
     char peerMove[64];
@@ -401,7 +401,7 @@ else if (strcmp(msg, "RESOLUTION_REQUEST") == 0) {
                 send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
                 continue;
             }
-// Trigger CALCULATION_REPORT either automatically or manually
+// CALCULATION_REPORT
 bool triggerCalcReport = false;
 
 if (bm.ctx.currentState == STATE_WAITING_FOR_MOVE && bm.ctx.isMyTurn && strlen(bm.ctx.lastMoveUsed) > 0) {
