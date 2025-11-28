@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <conio.h>
 #include <windows.h>
+#include <stdint.h>
 
 #include "game_logic.h"
 #include "pokemon_data.h"
@@ -49,6 +50,91 @@ void init_pending() {
     pending.retries = 0;
     pending.last_sent_ms = 0;
     pending.dest_len = 0;
+}
+
+bool VERBOSE_MODE = false;
+
+void vprint(const char *fmt, ...) {
+    if (!VERBOSE_MODE) return;
+
+    va_list args;
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+}
+
+// base64 helpers, for STICKERS
+char* base64_encode(const unsigned char* data, size_t input_length, size_t *out_len);
+unsigned char* base64_decode(const char* data, size_t input_length, size_t* out_len);
+
+static const char base64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+char* base64_encode(const unsigned char *data, size_t input_length, size_t *out_len) {
+    size_t olen = 4 * ((input_length + 2) / 3);
+    char *encoded = malloc(olen + 1);
+    *out_len = olen;
+
+    for (size_t i = 0, j = 0; i < input_length;) {
+        uint32_t octet_a = i < input_length ? data[i++] : 0;
+        uint32_t octet_b = i < input_length ? data[i++] : 0;
+        uint32_t octet_c = i < input_length ? data[i++] : 0;
+
+        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
+
+        encoded[j++] = base64_table[(triple >> 18) & 0x3F];
+        encoded[j++] = base64_table[(triple >> 12) & 0x3F];
+        encoded[j++] = base64_table[(triple >> 6) & 0x3F];
+        encoded[j++] = base64_table[triple & 0x3F];
+    }
+
+    int mod = input_length % 3;
+    if (mod) encoded[olen - 1] = '=';
+    if (mod == 1) encoded[olen - 2] = '=';
+
+    encoded[olen] = '\0';
+    return encoded;
+}
+
+unsigned char* base64_decode(const char *data, size_t input_len, size_t *out_len) {
+    if (input_len % 4 != 0) return NULL;
+
+    size_t olen = input_len / 4 * 3;
+    if (data[input_len - 1] == '=') olen--;
+    if (data[input_len - 2] == '=') olen--;
+
+    unsigned char *decoded = malloc(olen);
+    *out_len = olen;
+
+    int table[256];
+    memset(table, -1, sizeof(table));  
+    for (int i = 0; i < 64; i++) 
+        table[(unsigned char) base64_table[i]] = i;
+
+    for (size_t i = 0, j = 0; i < input_len;) {
+        uint32_t sextet_a = data[i] == '=' ? 0 : table[(unsigned char)data[i]]; i++;
+        uint32_t sextet_b = data[i] == '=' ? 0 : table[(unsigned char)data[i]]; i++;
+        uint32_t sextet_c = data[i] == '=' ? 0 : table[(unsigned char)data[i]]; i++;
+        uint32_t sextet_d = data[i] == '=' ? 0 : table[(unsigned char)data[i]]; i++;
+
+        uint32_t triple =
+            (sextet_a << 18) |
+            (sextet_b << 12) |
+            (sextet_c << 6) |
+            sextet_d;
+
+        if (j < olen) decoded[j++] = (triple >> 16) & 0xFF;
+        if (j < olen) decoded[j++] = (triple >> 8) & 0xFF;
+        if (j < olen) decoded[j++] = triple & 0xFF;
+    }
+    return decoded;
+}
+
+void save_sticker(const char *filename, unsigned char *data, size_t len) {
+    FILE *f = fopen(filename, "wb");
+    if (!f) return;
+    fwrite(data, 1, len, f);
+    fclose(f);
 }
 
 char *get_message_type(char *message) {
@@ -206,7 +292,7 @@ int main() {
         if (FD_ISSET(socket_network, &readfds)) {
             memset(receive, 0, sizeof(receive));
             int byte_received = recvfrom(socket_network, receive, sizeof(receive) - 1, 0, (SOCKADDR*)&from_server, &from_len);
-
+            
             if (byte_received > 0) {
                 receive[byte_received] = '\0';
                 char *msg = get_message_type(receive);
@@ -305,6 +391,32 @@ else if (strcmp(msg, "RESOLUTION_REQUEST") == 0) {
     }
 }
 
+            if (!strncmp(msg, "CHAT_MESSAGE", 12)) {
+                    char *text = strstr(receive, "text: ");
+                    if (text) text += 6;
+                    printf("\n[CHAT] %s\n", text);
+                    continue;
+                }
+
+                if (!strncmp(msg, "STICKER_MESSAGE", 15)) {
+                    char *data = strstr(receive, "data: ");
+                    if (data) data += 6;
+
+                    printf("\n[STICKER RECEIVED → saved as output_sticker.png]\n");
+
+                    size_t outlen;
+                    unsigned char *decoded = base64_decode(data, strlen(data), &outlen);
+                    save_sticker("output_sticker.png", decoded, outlen);
+                    free(decoded);
+
+                    continue;
+                }
+
+                if (!strncmp(msg, "VERBOSE_TOGGLE", 14)) {
+                    VERBOSE_MODE = !VERBOSE_MODE;
+                    printf("[VERBOSE] now %s\n", VERBOSE_MODE ? "ON" : "OFF");
+                    continue;
+                }
 
                 // Application-level prints
                 if (!strncmp(msg, "HANDSHAKE_RESPONSE", 18)) {
@@ -370,27 +482,77 @@ else if (strcmp(msg, "RESOLUTION_REQUEST") == 0) {
     }
 }
 
-                if (_kbhit()) {
+            if (_kbhit()) {
                 if (fgets(buffer, MaxBufferSize, stdin) == NULL) continue;
                 clean_newline(buffer);
                 if (strlen(buffer) == 0) continue;
 
-                    if (strcmp(buffer, "ATTACK_ANNOUNCE") == 0) {
-                char moveName[64];
-                printf("Enter Move Name: ");
-                if (fgets(moveName, sizeof(moveName), stdin) == NULL) continue;
-                clean_newline(moveName);
+                if (strncmp(buffer, "/chat ", 6) == 0) {
+                    char buf[1024];
+                    sprintf(buf,
+                        "message_type: CHAT_MESSAGE\ntext: %s",
+                        buffer + 6);
 
-                snprintf(full_message, sizeof(full_message),
-                    "message_type: \"ATTACK_ANNOUNCE\"\n"
-                    "move_name: %s\n"
-                    "sequence_number: %d",
-                    moveName,
-                    ++bm.ctx.currentSequenceNum);
+                    send_sequenced_message(socket_network, buf, &server_address, sizeof(server_address));
+                    continue;
+                }
 
-                send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
-                continue;
-            }
+                if (strncmp(buffer, "/sticker ", 9) == 0) {
+                    char *filename = buffer + 9;
+                    filename[strcspn(filename, "\n")] = 0;
+
+                    FILE *f = fopen(filename, "rb");
+                    if (!f) {
+                        printf("File not found.\n");
+                        continue;
+                    }
+
+                    fseek(f, 0, SEEK_END);
+                    long size = ftell(f);
+                    rewind(f);
+
+                    unsigned char *raw = malloc(size);
+                    fread(raw, 1, size, f);
+                    fclose(f);
+
+                    size_t outlen;
+                    char *encoded = base64_encode(raw, size, &outlen);
+
+                    char buf[5000];
+                    sprintf(buf,
+                        "message_type: STICKER_MESSAGE\ndata: %s",
+                        encoded);
+
+                    send_sequenced_message(socket_network, buf, &server_address, sizeof(server_address));
+
+                    free(raw);
+                    free(encoded);
+                    continue;
+                }
+
+                if (strncmp(buffer, "/verbose", 8) == 0) {
+                    send_sequenced_message(socket_network,
+                        "message_type: VERBOSE_TOGGLE",
+                        &server_address, sizeof(server_address));
+                    continue;
+                }
+
+                if (strcmp(buffer, "ATTACK_ANNOUNCE") == 0) {
+                    char moveName[64];
+                    printf("Enter Move Name: ");
+                    if (fgets(moveName, sizeof(moveName), stdin) == NULL) continue;
+                    clean_newline(moveName);
+
+                    snprintf(full_message, sizeof(full_message),
+                        "message_type: \"ATTACK_ANNOUNCE\"\n"
+                        "move_name: %s\n"
+                        "sequence_number: %d",
+                        moveName,
+                        ++bm.ctx.currentSequenceNum);
+
+                    send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+                    continue;
+                }
 
             if (strcmp(buffer, "DEFENSE_ANNOUNCE") == 0) {
                 snprintf(full_message, sizeof(full_message),

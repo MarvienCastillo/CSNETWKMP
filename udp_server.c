@@ -6,6 +6,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <conio.h>
+#include <stdint.h>
 
 #include "game_logic.h"
 #include "pokemon_data.h"
@@ -65,6 +66,89 @@ void init_pending() {
     pending.retries = 0;
     pending.last_sent_ms = 0;
     pending.dest_len = 0;
+}
+
+bool VERBOSE_MODE = false;
+
+void vprint(const char *fmt, ...) {
+    if (!VERBOSE_MODE) return;
+
+    va_list args;
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+}
+
+//base64 helpers for STICKERS
+char* base64_encode(const unsigned char* data, size_t input_length, size_t *out_len);
+unsigned char* base64_decode(const char* data, size_t input_length, size_t *out_len);
+
+static const char base64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+char* base64_encode(const unsigned char *data, size_t input_length, size_t *out_len) {
+    size_t olen = 4 * ((input_length + 2) / 3);
+    char *encoded = malloc(olen + 1);
+    *out_len = olen;
+
+    for (size_t i = 0, j = 0; i < input_length;) {
+        uint32_t octet_a = i < input_length ? data[i++] : 0;
+        uint32_t octet_b = i < input_length ? data[i++] : 0;
+        uint32_t octet_c = i < input_length ? data[i++] : 0;
+
+        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
+
+        encoded[j++] = base64_table[(triple >> 18) & 0x3F];
+        encoded[j++] = base64_table[(triple >> 12) & 0x3F];
+        encoded[j++] = base64_table[(triple >> 6) & 0x3F];
+        encoded[j++] = base64_table[triple & 0x3F];
+    }
+
+    int mod = input_length % 3;
+    if (mod) encoded[olen - 1] = '=';
+    if (mod == 1) encoded[olen - 2] = '=';
+
+    encoded[olen] = '\0';
+    return encoded;
+}
+
+unsigned char* base64_decode(const char *data, size_t input_len, size_t *out_len) {
+    if (input_len % 4 != 0) return NULL;
+
+    size_t olen = input_len / 4 * 3;
+    if (data[input_len - 1] == '=') olen--;
+    if (data[input_len - 2] == '=') olen--;
+
+    unsigned char *decoded = malloc(olen);
+    *out_len = olen;
+
+    int table[256];
+    for (int i = 0; i < 64; i++) table[(unsigned char) base64_table[i]] = i;
+
+    for (size_t i = 0, j = 0; i < input_len;) {
+        uint32_t sextet_a = data[i] == '=' ? 0 : table[(unsigned char)data[i]]; i++;
+        uint32_t sextet_b = data[i] == '=' ? 0 : table[(unsigned char)data[i]]; i++;
+        uint32_t sextet_c = data[i] == '=' ? 0 : table[(unsigned char)data[i]]; i++;
+        uint32_t sextet_d = data[i] == '=' ? 0 : table[(unsigned char)data[i]]; i++;
+
+        uint32_t triple =
+            (sextet_a << 18) |
+            (sextet_b << 12) |
+            (sextet_c << 6) |
+            sextet_d;
+
+        if (j < olen) decoded[j++] = (triple >> 16) & 0xFF;
+        if (j < olen) decoded[j++] = (triple >> 8) & 0xFF;
+        if (j < olen) decoded[j++] = triple & 0xFF;
+    }
+    return decoded;
+}
+
+void save_sticker(const char *filename, unsigned char *data, size_t len) {
+    FILE *f = fopen(filename, "wb");
+    if (!f) return;
+    fwrite(data, 1, len, f);
+    fclose(f);
 }
 
 char *get_message_type(char *message) {
@@ -283,6 +367,34 @@ int main() {
                     // If logic produced a response, send it only if incoming wasn't already a reply
                     if (strlen(logicResponseBuf) > 0 && !message_is_reply(receive)) {
                         send_sequenced_message(server_socket, logicResponseBuf, &SenderAddr, SenderAddrSize);
+                    }
+
+                    if (!strncmp(msg, "CHAT_MESSAGE", 12)) {
+                        printf("[CHAT] %s\n", receive + strlen("message_type: CHAT_MESSAGE\ntext: "));
+                        // Broadcast to both players + spectators
+                        //send_to_all_clients(receive);
+                        //continue;
+                    }
+
+                    if (!strncmp(msg, "STICKER_MESSAGE", 15)) {
+                        char *data = strstr(receive, "data: ");
+                        if (data) data += 6;
+
+                        printf("[STICKER RECEIVED]\n");
+
+                        size_t outlen;
+                        unsigned char *decoded = base64_decode(data, strlen(data), &outlen);
+                        save_sticker("received_sticker.png", decoded, outlen);
+                        free(decoded);
+
+                        //send_to_all_clients(receive);
+                        //continue;
+                    }
+
+                    if (!strncmp(msg, "VERBOSE_TOGGLE", 14)) {
+                        VERBOSE_MODE = !VERBOSE_MODE;
+                        printf("[VERBOSE] mode is now: %s\n", VERBOSE_MODE ? "ON" : "OFF");
+                        continue;
                     }
 
                     // Handle Handshakes and message types
