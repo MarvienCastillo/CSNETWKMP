@@ -252,8 +252,10 @@ int main() {
                     isSpectator = true;
                 }
                 else {
-                    printf("\n[UPDATE] %s\n", msg);
-                }
+                    printf("\n[UPDATE RECEIVED MESSAGE]\n%s\n", receive);
+                    printf("message_type: ");
+                    }
+            
             }
         }
         // update prompt state
@@ -393,6 +395,25 @@ int main() {
         promptPrinted = false;
         continue;
     }
+if (strcmp(buffer, "GAME_OVER") == 0) {
+    snprintf(full_message, sizeof(full_message),
+        "message_type: GAME_OVER\n"
+        "winner: %s\n"
+        "loser: %s\n"
+        "sequence_number: %d",
+        bm.ctx.myPokemon.name,      // the winner
+        bm.ctx.oppPokemon.name,     // the loser
+        ++bm.ctx.currentSequenceNum
+    );
+
+    send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+    
+    // Trigger local game over logic
+    BattleManager_TriggerGameOver(&bm, bm.ctx.myPokemon.name, bm.ctx.oppPokemon.name);
+    
+    promptPrinted = false;
+    continue;
+}
 
 
                     if (strcmp(buffer, "BATTLE_SETUP") == 0) {

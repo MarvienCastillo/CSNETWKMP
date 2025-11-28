@@ -28,4 +28,6 @@ const char* BattleManager_GetOutgoingMessage(BattleManager *bm);
 // Clear outgoing buffer after sending
 void BattleManager_ClearOutgoingMessage(BattleManager *bm);
 
+void BattleManager_TriggerGameOver(BattleManager *bm, const char *winner, const char *loser);
+
 #endif

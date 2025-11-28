@@ -7,6 +7,44 @@ static int get_msg_type(const char *msg, const char *type_str) {
     return strstr(msg, type_str) != NULL;
 }
 
+static void display_game_over(const char *winner, const char *loser, int seq) {
+    printf("\n===============================\n");
+    printf("          GAME OVER           \n");
+    printf("===============================\n");
+    printf("Winner: %s\n", winner);
+    printf("Loser : %s\n", loser);
+    printf("Sequence Number: %d\n", seq);
+    printf("===============================\n\n");
+}
+static void handle_game_over(BattleManager *bm, const char *msg) {
+    char winner[64], loser[64], seq_buf[16];
+    extract_value((char *)msg, "winner", winner);
+    extract_value((char *)msg, "loser", loser);
+    extract_value((char *)msg, "sequence_number", seq_buf);
+
+    int seq = atoi(seq_buf);
+    display_game_over(winner, loser, seq);
+
+    bm->ctx.currentState = STATE_GAME_OVER;
+}
+
+// --- Sending a GAME_OVER message ---
+void BattleManager_TriggerGameOver(BattleManager *bm, const char *winner, const char *loser) {
+    char msg[BM_MAX_MSG_SIZE];
+
+    snprintf(msg, BM_MAX_MSG_SIZE,
+        "message_type: \"GAME_OVER\"\n"
+        "winner: %s\n"
+        "loser: %s\n"
+        "sequence_number: %d",
+        winner,
+        loser,
+        ++bm->ctx.currentSequenceNum
+    );
+
+    handle_game_over(bm, msg);
+}
+
 // --- Handlers ---
 static void handle_attack_announce(BattleManager *bm, const char *msg) {
     BattleContext *ctx = &bm->ctx;
@@ -41,7 +79,25 @@ static void handle_defense_announce(BattleManager *bm, const char *msg) {
     int remaining_hp = ctx->oppPokemon.hp - dmg;
     if (remaining_hp < 0) remaining_hp = 0;
 
-    // Strict CALCULATION_REPORT format
+    ctx->oppPokemon.hp = remaining_hp;
+
+    if (ctx->oppPokemon.hp <= 0) {
+    
+    snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
+        "message_type: GAME_OVER\n"
+        "winner: %s\n"
+        "loser: %s\n"
+        "sequence_number: %d\n",
+        ctx->myPokemon.name,
+        ctx->oppPokemon.name,
+        ++ctx->currentSequenceNum
+    );
+
+    ctx->currentState = STATE_GAME_OVER;
+    printf("[GAME] Opponent fainted! GAME_OVER triggered.\n");
+    return;
+}
+
     snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
         "message_type: CALCULATION_REPORT\n"
         "attacker: %s\n"
@@ -91,6 +147,7 @@ static void handle_calculation_confirm(BattleManager *bm, const char *msg) {
     ctx->isMyTurn = 1;
     ctx->currentState = STATE_WAITING_FOR_MOVE;
 }
+
 // --- Public API ---
 void BattleManager_Init(BattleManager *bm, int isHost, const char *myPokeName) {
     memset(bm, 0, sizeof(BattleManager));
@@ -104,12 +161,20 @@ void BattleManager_HandleIncoming(BattleManager *bm, const char *msg) {
     else if (get_msg_type(msg, "DEFENSE_ANNOUNCE")) handle_defense_announce(bm, msg);
     else if (get_msg_type(msg, "CALCULATION_REPORT")) handle_calculation_report(bm, msg);
     else if (get_msg_type(msg, "CALCULATION_CONFIRM")) handle_calculation_confirm(bm, msg);
+    else if (get_msg_type(msg, "GAME_OVER")) handle_game_over(bm, msg);
 }
 
 void BattleManager_HandleUserInput(BattleManager *bm, const char *input) {
     BattleContext *ctx = &bm->ctx;
     memset(bm->outgoingBuffer, 0, BM_MAX_MSG_SIZE);
 
+    // Special case: user types "GAME_OVER"
+    if (strcmp(input, "GAME_OVER") == 0) {
+        BattleManager_TriggerGameOver(bm, ctx->myPokemon.name, ctx->oppPokemon.name);
+        return;
+    }
+
+    // Normal move handling
     if (ctx->currentState == STATE_WAITING_FOR_MOVE && ctx->isMyTurn) {
         strcpy(ctx->lastMoveUsed, input);
         snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
@@ -129,6 +194,7 @@ int BattleManager_CheckWinLoss(BattleManager *bm) {
     if (bm->ctx.oppPokemon.hp <= 0) return 1; // won
     return 0; // ongoing
 }
+
 
 const char* BattleManager_GetOutgoingMessage(BattleManager *bm) {
     return bm->outgoingBuffer;
