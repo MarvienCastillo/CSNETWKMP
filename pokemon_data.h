@@ -102,8 +102,8 @@ static int loadPokemonCSV(const char* filename) {
             pokedex[i].sp_defense
         );
     }
-
+    */
     return 1;
-} */
+}
 
 #endif
