@@ -1,7 +1,8 @@
 How to compile and run: 
 
-gcc udp_client.c BattleManager.c game_logic.c pokemon_data.c -o client.exe -lws2_32
-gcc udp_server.c BattleManager.c game_logic.c pokemon_data.c -o server.exe -lws2_32
+gcc udp_client.c BattleManager.c game_logic.c utils.c -o client.exe -lws2_32
+gcc udp_server.c BattleManager.c game_logic.c utils.c -o server.exe -lws2_32
+
 
 Then run in this order:
 
