@@ -238,6 +238,72 @@ int main() {
                     send_sequenced_message(socket_network, outgoing, &server_address, sizeof(server_address));
                     BattleManager_ClearOutgoingMessage(&bm);
                 }
+                //  Discrepancy Resolution 
+if (strcmp(msg, "CALCULATION_REPORT") == 0) {
+
+    char peerMove[64];
+    int peerDamage, peerRemainingHP;
+    char attacker[64];
+
+    extract_value(receive, "move_used", peerMove);
+    extract_value(receive, "damage_dealt", buffer); peerDamage = atoi(buffer);
+    extract_value(receive, "remaining_health", buffer); peerRemainingHP = atoi(buffer);
+    extract_value(receive, "attacker", attacker);
+
+    bool match = (strcmp(peerMove, bm.ctx.lastMoveUsed) == 0) &&
+                 (peerDamage == bm.ctx.lastDamage) &&
+                 (peerRemainingHP == bm.ctx.lastRemainingHP);
+
+    if (match) {
+        snprintf(full_message, sizeof(full_message),
+            "message_type: CALCULATION_CONFIRM\nsequence_number: %d",
+            ++bm.ctx.currentSequenceNum);
+        send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+
+        bm.ctx.isMyTurn = !bm.ctx.isMyTurn;
+        bm.ctx.currentState = STATE_WAITING_FOR_MOVE;
+    } else {
+        snprintf(full_message, sizeof(full_message),
+            "message_type: RESOLUTION_REQUEST\n"
+            "move_used: %s\n"
+            "damage_dealt: %d\n"
+            "remaining_health: %d\n"
+            "sequence_number: %d",
+            bm.ctx.lastMoveUsed,
+            bm.ctx.lastDamage,
+            bm.ctx.lastRemainingHP,
+            ++bm.ctx.currentSequenceNum);
+        send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+
+        bm.ctx.currentState = STATE_WAITING_FOR_RESOLUTION;
+    }
+}
+
+else if (strcmp(msg, "RESOLUTION_REQUEST") == 0) {
+
+    char reqMove[64];
+    int reqDamage, reqRemainingHP;
+    extract_value(receive, "move_used", reqMove);
+    extract_value(receive, "damage_dealt", buffer); reqDamage = atoi(buffer);
+    extract_value(receive, "remaining_health", buffer); reqRemainingHP = atoi(buffer);
+
+    bool agree = (strcmp(reqMove, bm.ctx.lastMoveUsed) == 0) &&
+                 (reqDamage == bm.ctx.lastDamage) &&
+                 (reqRemainingHP == bm.ctx.lastRemainingHP);
+
+    if (agree) {
+        snprintf(full_message, sizeof(full_message),
+            "message_type: ACK\nsequence_number: %d",
+            ++bm.ctx.currentSequenceNum);
+        send_sequenced_message(socket_network, full_message, &server_address, sizeof(server_address));
+
+        bm.ctx.currentState = STATE_WAITING_FOR_MOVE;
+        bm.ctx.isMyTurn = !bm.ctx.isMyTurn;
+    } else {
+        printf("[ERROR] Discrepancy could not be resolved. Terminating battle.\n");
+        bm.ctx.currentState = STATE_GAME_OVER;
+    }
+}
 
 
                 // Application-level prints

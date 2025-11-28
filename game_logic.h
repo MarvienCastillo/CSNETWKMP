@@ -15,21 +15,20 @@ typedef enum {
     STATE_SETUP,             
     STATE_WAITING_FOR_MOVE,  
     STATE_PROCESSING_TURN,   
-    STATE_GAME_OVER          
+    STATE_GAME_OVER,       
+    STATE_WAITING_FOR_RESOLUTION
 } GameState;
 
 typedef struct {
     int isHost;              
     int isMyTurn;            
     GameState currentState;
-    
     Pokemon myPokemon;       
     Pokemon oppPokemon;
-
-
     char lastMoveUsed[64];
-
     int currentSequenceNum; 
+    int lastDamage;
+    int lastRemainingHP;
 } BattleContext;
 
 typedef struct {
