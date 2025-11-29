@@ -319,7 +319,7 @@ int main() {
                     printf("[JOINER] BATTLE_SETUP received:\n%s\n", receive);
                     processBattleSetup(receive, &host_setup);
                     is_battle_started = true;
-                } else if (!strncmp(buffer, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
+                } else if (!strncmp(msg, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
                     processChatMessage(receive);
                     continue;
                 } else if (!strcmp(msg, "VERBOSE_ON")) {
