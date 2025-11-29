@@ -4,6 +4,11 @@ gcc udp_client.c battle_setup.c game_logic.c -o client.exe -lws2_32
 
 gcc udp_server.c -o server.exe -lws2_32
 
+
+gcc udp_host.c -o host.exe -lws2_32
+
+gcc udp_joiner.c -o joiner.exe -lws2_32
+
 Then run in this order:
 
 > host
