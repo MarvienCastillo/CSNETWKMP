@@ -26,6 +26,109 @@ typedef struct {
 bool is_handshake_done = false;
 bool is_battle_started = false;
 bool is_game_over = false;
+bool VERBOSE_MODE = false;
+
+void vprint(const char *fmt, ...) {
+    if (!VERBOSE_MODE) return;
+    va_list args;
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+}
+
+// Base64 encode/decode — minimal portable implementation
+static const char b64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+char *base64_encode(const unsigned char *src, size_t len) {
+    char *out, *pos;
+    const unsigned char *end, *in;
+    size_t olen = 4*((len+2)/3);
+    out = malloc(olen+1);
+    if (!out) return NULL;
+    pos = out;
+    end = src + len;
+    in = src;
+
+    while (end - in >= 3) {
+        *pos++ = b64_table[in[0] >> 2];
+        *pos++ = b64_table[((in[0] & 0x03) << 4) | (in[1] >> 4)];
+        *pos++ = b64_table[((in[1] & 0x0f) << 2) | (in[2] >> 6)];
+        *pos++ = b64_table[in[2] & 0x3f];
+        in += 3;
+    }
+
+    if (end - in) {
+        *pos++ = b64_table[in[0] >> 2];
+        if (end - in == 1) {
+            *pos++ = b64_table[(in[0] & 0x03) << 4];
+            *pos++ = '=';
+        } else {
+            *pos++ = b64_table[((in[0] & 0x03) << 4) | (in[1] >> 4)];
+            *pos++ = b64_table[(in[1] & 0x0f) << 2];
+        }
+        *pos++ = '=';
+    }
+
+    *pos = '\0';
+    return out;
+}
+
+unsigned char *base64_decode(const char *src, size_t *out_len) {
+    int table[256];
+    int i;
+
+    for (i = 0; i < 256; i++) 
+        table[i] = -1;
+    for (i = 0; i < 64; i++) 
+        table[(unsigned char)b64_table[i]] = i;
+
+    size_t len = strlen(src);
+    unsigned char *out = malloc(len);
+    if (!out) return NULL;
+
+    int val = 0, valb = -8;
+    size_t pos = 0;
+
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = src[i];
+        if (c == '=' || c > 127) continue;
+        if (table[c] == 0 && c != 'A')
+            continue;
+        val = (val << 6) + table[c];
+        valb += 6;
+        if (valb >= 0) {
+            out[pos++] = (val >> valb) & 0xFF;
+            valb -= 8;
+        }
+    }
+    *out_len = pos;
+    return out;
+}
+
+void saveSticker(const char *b64, const char *sender) {
+    size_t out_len;
+    unsigned char *data = base64_decode(b64, &out_len);
+    if (!data) {
+        printf("[ERROR] Failed to decode Base64 sticker.\n");
+        return;
+    }
+
+    char filename[256];
+    sprintf(filename, "%s_sticker.png", sender);
+
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) {
+        printf("[ERROR] Cannot save sticker.\n");
+        return;
+    }
+
+    fwrite(data, 1, out_len, fp);
+    fclose(fp);
+
+    printf("[STICKER] Sticker received from %s → saved as %s\n", sender, filename);
+}
+
 /*
     message - incoming message string
     This function extracts and returns the message type from the given message string.
@@ -35,6 +138,34 @@ char *get_message_type(char *message) {
     if (msg) return msg + 14;
     return NULL;
 }
+
+void processChatMessage(char *msg) {
+    char sender[64], type[16];
+
+    char *p_sender = strstr(msg, "sender_name: ");
+    char *p_type   = strstr(msg, "content_type: ");
+    if (!p_sender || !p_type) return;
+
+    sscanf(p_sender, "sender_name: %63[^\n]", sender);
+    sscanf(p_type, "content_type: %15[^\n]", type);
+
+    if (!strcmp(type, "TEXT")) {
+        char *p_text = strstr(msg, "message_text: ");
+        if (!p_text) return;
+
+        char text[512];
+        sscanf(p_text, "message_text: %511[^\n]", text);
+        printf("[CHAT] %s: %s\n", sender, text);
+
+    } else if (!strcmp(type, "STICKER")) {
+        char *p_data = strstr(msg, "sticker_data: ");
+        if (!p_data) return;
+
+        char *b64 = p_data + strlen("sticker_data: ");
+        saveSticker(b64, sender);
+    }
+}
+
 /*
     str - string to clean
     This function removes trailing newline and carriage return characters from the string.
@@ -74,6 +205,7 @@ void getInputBattleSetup(BattleSetupData* setup) {
     sscanf(atk, "\"special_attack_uses\": %d", &setup->boosts.specialAttack);
     sscanf(def, "\"special_defense_uses\": %d", &setup->boosts.specialDefense);
 }
+
 /*
     receive - incoming message string
     setup - pointer to BattleSetupData to fill
@@ -93,6 +225,7 @@ void processBattleSetup(char *receive,BattleSetupData *setup) {
            setup->communicationMode, setup->pokemonName,
            setup->boosts.specialAttack, setup->boosts.specialDefense);
 }
+
 int main() {
     WSADATA wsa;
     SOCKET socket_network;
@@ -163,6 +296,12 @@ int main() {
                                          (SOCKADDR*)&from_host, &from_len);
             if (byte_received > 0) {
                 clean_newline(receive);
+
+                vprint("\n[VERBOSE] Received raw message from %s:%d\n%s\n",
+                inet_ntoa(from_host.sin_addr),
+                ntohs(from_host.sin_port),
+                receive);
+
                 char *msg = get_message_type(receive);
                 if (!msg) continue;
 
@@ -180,6 +319,16 @@ int main() {
                     printf("[JOINER] BATTLE_SETUP received:\n%s\n", receive);
                     processBattleSetup(receive, &host_setup);
                     is_battle_started = true;
+                } else if (!strncmp(buffer, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
+                    processChatMessage(receive);
+                    continue;
+                } else if (!strcmp(msg, "VERBOSE_ON")) {
+                    VERBOSE_MODE = true;
+                    printf("[SYSTEM] Verbose mode enabled.\n");
+                }
+                else if (!strcmp(msg, "VERBOSE_OFF")) {
+                    VERBOSE_MODE = false;
+                    printf("[SYSTEM] Verbose mode disabled.\n");
                 } else {
                     // ignore other messages in this simple version
                 }
@@ -201,6 +350,7 @@ int main() {
                 } else {
                     printf("[JOINER] HANDSHAKE_REQUEST sent to %s:%d\n",
                            inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));
+                    vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
                 }
             } else if (!strncmp(buffer, "BATTLE_SETUP", strlen("BATTLE_SETUP")) && is_handshake_done) {
                 getInputBattleSetup(&setup);
@@ -220,8 +370,95 @@ int main() {
                 } else {
                     printf("[JOINER] BATTLE_SETUP sent to host %s:%d\n",
                            inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));
+                    vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
                     is_battle_started = true;
                 }
+            }  else if (!strcmp(buffer, "CHAT_MESSAGE")) {
+                char sender[64] = "Player 2"; //TODO: see if this can be changed based on number of joiners!
+                char content_type[16];
+
+                printf("sender_name: Player 2\n");
+
+                printf("Enter content_type (TEXT/STICKER): ");
+                if (!fgets(content_type, sizeof(content_type), stdin)) continue;
+                clean_newline(content_type);
+
+                if (strcmp(content_type, "TEXT") == 0) {
+                    char message_text[512];
+                    printf("Enter message_text: ");
+                    if (!fgets(message_text, sizeof(message_text), stdin)) continue;
+                    clean_newline(message_text);
+
+                    static int seq = 1;
+                    sprintf(full_message,
+                        "message_type: CHAT_MESSAGE\n"
+                        "sender_name: %s\n"
+                        "content_type: TEXT\n"
+                        "message_text: %s\n"
+                        "sequence_number: %d\n",
+                        sender, message_text, seq++);
+
+                    int sent = sendto(socket_network, full_message, strlen(full_message), 0,
+                        (SOCKADDR*)&server_address, serverSize);
+                    printf("[JOINER] Sent TEXT message.\n");
+                    vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
+
+                } else if (strcmp(content_type, "STICKER") == 0) {
+                    char path[256];
+                    printf("Path to PNG (320x320): ");
+                    if (!fgets(path, sizeof(path), stdin)) continue;
+                    clean_newline(path);
+
+                    FILE *fp = fopen(path, "rb");
+                    if (!fp) { printf("[ERROR] Cannot open file.\n"); continue; }
+
+                    fseek(fp, 0, SEEK_END);
+                    long fsize = ftell(fp);
+                    fseek(fp, 0, SEEK_SET);
+
+                    unsigned char *raw = malloc(fsize);
+                    if (!raw) { 
+                        fclose(fp); 
+                        continue; }
+                    fread(raw, 1, fsize, fp);
+                    fclose(fp);
+
+                    char *b64 = base64_encode(raw, fsize);
+                    free(raw);
+
+                    size_t needed = strlen(b64) + 512; // 512 bytes for headers and extra fields
+                    char *full_message = malloc(needed); 
+                    
+                    if (!full_message) { 
+                        printf("[ERROR] Failed to allocate memory for message.\n"); 
+                        free(b64); 
+                        continue; }
+
+                    static int seq = 1;
+                    sprintf(full_message,
+                        "message_type: CHAT_MESSAGE\n"
+                        "sender_name: %s\n"
+                        "content_type: STICKER\n"
+                        "sticker_data: %s\n"
+                        "sequence_number: %d\n",
+                        sender, b64, seq++);
+
+                    int sent = sendto(socket_network, full_message, strlen(full_message), 0,
+                        (SOCKADDR*)&server_address, serverSize);
+                    free(b64);
+
+                    printf("[JOINER] Sent STICKER message.\n");
+                    vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
+                } else {
+                    printf("[ERROR] Invalid content_type. Must be TEXT or STICKER.\n");
+                }
+            } else if (!strcmp(buffer, "VERBOSE_ON")) {
+                VERBOSE_MODE = true;
+                printf("[SYSTEM] Verbose mode enabled.\n");
+            }
+            else if (!strcmp(buffer, "VERBOSE_OFF")) {
+                VERBOSE_MODE = false;
+                printf("[SYSTEM] Verbose mode disabled.\n");
             } else {
                 printf("Unknown or invalid command. Use HANDSHAKE_REQUEST or BATTLE_SETUP (after handshake).\n");
             }
