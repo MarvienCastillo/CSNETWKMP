@@ -369,6 +369,27 @@ int main(void) {
                     sendMessageAuto(recvbuf,last_peer,last_peer_len,peer_setup,true);
                     is_battle_started = true;
                 }
+                else if (!strcmp(mt, "ATTACK_ANNOUNCE")) {
+    BattleManager_HandleIncoming(&bm, recvbuf);
+}
+else if (!strcmp(mt, "DEFENSE_ANNOUNCE")) {
+    BattleManager_HandleIncoming(&bm, recvbuf);
+}
+else if (!strcmp(mt, "CALCULATION_REPORT")) {
+    BattleManager_HandleIncoming(&bm, recvbuf);
+}
+else if (!strcmp(mt, "CALCULATION_CONFIRM")) {
+    BattleManager_HandleIncoming(&bm, recvbuf);
+}
+else if (!strcmp(mt, "RESOLUTION_REQUEST")) {
+    BattleManager_HandleIncoming(&bm, recvbuf);
+}
+else if (!strcmp(mt, "GAME_OVER")) {
+    BattleManager_HandleIncoming(&bm, recvbuf);
+    is_game_over = true;
+    printf("[HOST] Game Over received.\n");
+}
+
                 else if (!strncmp(mt, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
                     // chat arrived from joiner (unicast or broadcast depending on joiner)
                     processChatMessage(recvbuf);
@@ -477,9 +498,77 @@ int main(void) {
                     BattleManager_ClearOutgoingMessage(&bm);
                 }
             }
-            else if(!strcmp(line,"DEFENSE_ANNOUNCE")){
-                
-            }
+              // --- DEFENSE ANNOUNCE ---
+    else if (!strcmp(line, "DEFENSE_ANNOUNCE")) {
+        snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                "message_type: DEFENSE_ANNOUNCE\n"
+                "sequence_number: %d\n",
+                ++bm.ctx.currentSequenceNum);
+        sendMessageAuto(bm.outgoingBuffer, last_peer, last_peer_len, my_setup, false);
+        BattleManager_ClearOutgoingMessage(&bm);
+        continue;
+    }
+  // --- CALCULATION REPORT ---
+    else if (!strcmp(line, "CALCULATION_REPORT")) {
+        snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                 "message_type: CALCULATION_REPORT\n"
+                 "attacker: %s\n"
+                 "move_used: %s\n"
+                 "damage_dealt: %d\n"
+                 "defender_hp_remaining: %d\n"
+                 "sequence_number: %d\n",
+                 bm.ctx.myPokemon.name,
+                 bm.ctx.lastMoveUsed,
+                 bm.ctx.lastDamage,
+                 bm.ctx.lastRemainingHP,
+                 ++bm.ctx.currentSequenceNum);
+        sendMessageAuto(bm.outgoingBuffer, last_peer, last_peer_len, my_setup, false);
+        BattleManager_ClearOutgoingMessage(&bm);
+        continue;
+    }
+
+    // --- CALCULATION CONFIRM ---
+    else if (!strcmp(line, "CALCULATION_CONFIRM")) {
+        snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                 "message_type: CALCULATION_CONFIRM\n"
+                 "sequence_number: %d\n",
+                 ++bm.ctx.currentSequenceNum);
+        sendMessageAuto(bm.outgoingBuffer, last_peer, last_peer_len, my_setup, false);
+        BattleManager_ClearOutgoingMessage(&bm);
+        continue;
+    }
+
+// --- RESOLUTION REQUEST ---
+    else if (!strcmp(line, "RESOLUTION_REQUEST")) {
+        snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                 "message_type: RESOLUTION_REQUEST\n"
+                 "attacker: %s\n"
+                 "move_used: %s\n"
+                 "damage_dealt: %d\n"
+                 "defender_hp_remaining: %d\n"
+                 "sequence_number: %d\n",
+                 bm.ctx.myPokemon.name,
+                 bm.ctx.lastMoveUsed,
+                 bm.ctx.lastDamage,
+                 bm.ctx.lastRemainingHP,
+                 ++bm.ctx.currentSequenceNum);
+        sendMessageAuto(bm.outgoingBuffer, last_peer, last_peer_len, my_setup, false);
+        BattleManager_ClearOutgoingMessage(&bm);
+        continue;
+    }
+ // --- GAME OVER ---
+    else if (!strcmp(line, "GAME_OVER")) {
+        BattleManager_TriggerGameOver(&bm, bm.ctx.myPokemon.name, bm.ctx.oppPokemon.name);
+        const char *out = BattleManager_GetOutgoingMessage(&bm);
+        if (out && strlen(out) > 0) {
+            sendMessageAuto(out, last_peer, last_peer_len, my_setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
+        }
+        continue;
+    }
+
+
+
 
             // CHAT_MESSAGE (host sending)
             if (!strcmp(line, "CHAT_MESSAGE")) {
