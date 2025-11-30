@@ -214,20 +214,24 @@ int main() {
         return 1;
     }
 
-    // Bind host socket to 127.0.0.1:9002 so it can receive packets
-    memset(&server_address, 0, sizeof(server_address));
-    server_address.sin_family = AF_INET;
-    server_address.sin_port = htons(9002);
-    server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-    if (bind(socket_network, (SOCKADDR*)&server_address, sizeof(server_address)) == SOCKET_ERROR) {
+    // Bind host socket to 0.0.0.0 so it can receive packets
+    memset(&from_joiner, 0, sizeof(from_joiner));
+    from_joiner.sin_family = AF_INET;
+    from_joiner.sin_port = htons(9002);
+    from_joiner.sin_addr.s_addr = INADDR_ANY;
+    
+    if (bind(socket_network, (SOCKADDR*)&from_joiner, sizeof(from_joiner)) == SOCKET_ERROR) {
         printf("bind() failed with error %d\n", WSAGetLastError());
         closesocket(socket_network);
         WSACleanup();
         return 1;
     }
+    // unicast sending address
+    memset(&server_address, 0, sizeof(server_address));
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = htons(9002); // joiner listens on 9002
 
-    printf("Host listening on 127.0.0.1:9002. Waiting for handshake request...\n");
+    printf("Host listening on 0.0.0.0:9002. Waiting for handshake request...\n");
 
     while (!is_game_over) {
         // to read incoming messages with timeout
@@ -249,6 +253,14 @@ int main() {
             from_len = sizeof(from_joiner);
             int byte_received = recvfrom(socket_network, receive, sizeof(receive) - 1, 0,
                                          (SOCKADDR*)&from_joiner, &from_len);
+            if(byte_received == SOCKET_ERROR) {
+                printf("recvfrom() failed: %d\n", WSAGetLastError());
+                continue;
+            }
+            server_address.sin_addr = from_joiner.sin_addr;
+            server_address.sin_port = ntohs(from_joiner.sin_port);
+            printf("[HOST] Packet received from %s:%d\n",
+                   inet_ntoa(from_joiner.sin_addr), ntohs(from_joiner.sin_port));
             if (byte_received > 0) {
                 clean_newline(receive);
 
@@ -270,12 +282,13 @@ int main() {
                     sprintf(full_message, "message_type: HANDSHAKE_RESPONSE\nseed: %d\n", seed);
 
                     int sent = sendto(socket_network, full_message, (int)strlen(full_message), 0,
-                                      (SOCKADDR*)&from_joiner, from_len);
+                                      (SOCKADDR*)&server_address, sizeof(server_address));
+                
                     if (sent == SOCKET_ERROR) {
                         printf("[HOST] sendto() failed: %d\n", WSAGetLastError());
                     } else {
                         printf("[HOST] HANDSHAKE_RESPONSE sent to %s:%d (seed=%d). Handshake complete!\n",
-                               inet_ntoa(from_joiner.sin_addr), ntohs(from_joiner.sin_port), seed);
+                               inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port), seed);
                         vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
                     }
                 } else if (!strncmp(msg, "BATTLE_SETUP", strlen("BATTLE_SETUP")) && is_handshake_done) {

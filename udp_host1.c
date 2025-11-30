@@ -17,6 +17,8 @@
 #define HOST_PORT 9006
 #define BROADCAST_IP "255.255.255.255"
 
+#define MAX_SPECTATORS 10 
+
 typedef struct {
     int specialAttack;
     int specialDefense;
@@ -33,10 +35,13 @@ static const char b64_table[] =
 
 bool is_handshake_done = false;
 bool is_battle_started = false;
+bool battle_setup_received = false;
 bool is_game_over = false;
 bool VERBOSE_MODE = false;
 SOCKET sock = INVALID_SOCKET;   // unicast
 SOCKET broad_socket = INVALID_SOCKET; // broadcast listener
+struct sockaddr_in spectator_list[MAX_SPECTATORS];
+int spectator_count = 0;
 void vprint(const char *fmt, ...) {
     if (!VERBOSE_MODE) return;
     va_list ap;
@@ -187,35 +192,6 @@ void processBattleSetup(char *msg, BattleSetupData *out) {
 }
 
 /* ---------------- sending helpers ---------------- */
-void send_unicast(SOCKET s, const char *msg, const struct sockaddr_in *dest, int dest_len) {
-    int sent = sendto(s, msg, (int)strlen(msg), 0, (SOCKADDR*)dest, dest_len);
-    if (sent == SOCKET_ERROR) {
-        printf("[HOST] sendto(unicast) failed: %d\n", WSAGetLastError());
-    } else {
-        vprint("[HOST] Sent unicast (%d bytes) to %s:%d\n", sent, inet_ntoa(dest->sin_addr), ntohs(dest->sin_port));
-    }
-}
-
-void send_broadcast(SOCKET s, const char *msg) {
-    struct sockaddr_in bc;
-    memset(&bc, 0, sizeof(bc));
-    bc.sin_family = AF_INET;
-    bc.sin_port = htons(HOST_PORT); // Option A: send broadcast to port 9002
-    bc.sin_addr.s_addr = inet_addr(BROADCAST_IP);
-
-    int yes = 1;
-    if (setsockopt(s, SOL_SOCKET, SO_BROADCAST, (char*)&yes, sizeof(yes)) == SOCKET_ERROR) {
-        printf("[HOST] setsockopt(SO_BROADCAST) failed: %d\n", WSAGetLastError());
-        return;
-    }
-
-    int sent = sendto(s, msg, (int)strlen(msg), 0, (SOCKADDR*)&bc, sizeof(bc));
-    if (sent == SOCKET_ERROR) {
-        printf("[HOST] sendto(broadcast) failed: %d\n", WSAGetLastError());
-    } else {
-        vprint("[HOST] Sent broadcast (%d bytes) on port %d\n", sent, HOST_PORT);
-    }
-}
 
 /*
  Unified send: if setup.communicationMode == "BROADCAST" --> broadcast
@@ -225,45 +201,39 @@ void send_broadcast(SOCKET s, const char *msg) {
 void sendMessageAuto(const char *msg,
                      struct sockaddr_in *hostAddr,
                      int hostLen,
-                     BattleSetupData setup)
+                     BattleSetupData setup, bool isBroadcast)
 {
-    // ---------- BROADCAST MODE ----------
-    if (!strcmp(setup.communicationMode, "BROADCAST"))
-    {
+    // BROADCAST MODE
+    if (!strcmp(setup.communicationMode, "BROADCAST") || !battle_setup_received || isBroadcast) {
         struct sockaddr_in bc;
         memset(&bc, 0, sizeof(bc));
         bc.sin_family = AF_INET;
-        bc.sin_port = htons(9002);                 // Host’s port (all joiners listen too)
-        bc.sin_addr.s_addr = INADDR_BROADCAST;     // Correct broadcast address
+        bc.sin_port = htons(9003);            // host listens on 9002
+        bc.sin_addr.s_addr =  inet_addr("255.255.255.255");
 
         int enable = 1;
-        if (setsockopt(sock, SOL_SOCKET, SO_BROADCAST,
-                       (char*)&enable, sizeof(enable)) == SOCKET_ERROR)
-        {
-            printf("[HOST] Failed to enable SO_BROADCAST: %d\n",
-                   WSAGetLastError());
-            return;
-        }
+        setsockopt(sock, SOL_SOCKET, SO_BROADCAST,
+                   (char*)&enable, sizeof(enable));
 
-        int sent = sendto(sock, msg, (int)strlen(msg), 0,
+        int sent = sendto(sock, msg, strlen(msg), 0,
                           (SOCKADDR*)&bc, sizeof(bc));
 
         if (sent == SOCKET_ERROR)
-            printf("[HOST] Broadcast send failed: %d\n", WSAGetLastError());
+            printf("[JOINER] Broadcast send failed: %d\n", WSAGetLastError());
         else
-            printf("[HOST] Broadcast message sent → 255.255.255.255:9002\n");
+            printf("[JOINER] Broadcast message sent.\n");
 
         return;
     }
 
-    // ---------- UNICAST MODE ----------
-    int sent = sendto(sock, msg, (int)strlen(msg), 0,
+    // UNICAST MODE
+    int sent = sendto(sock, msg, strlen(msg), 0,
                       (SOCKADDR*)hostAddr, hostLen);
 
     if (sent == SOCKET_ERROR)
         printf("[JOINER] Unicast send failed: %d\n", WSAGetLastError());
     else
-        printf("[JOINER] Unicast sent → host.\n");
+        printf("[JOINER] Unicast message sent.\n");
 }
 
 
@@ -275,6 +245,8 @@ int main(void) {
 
     BattleSetupData my_setup;
     BattleSetupData peer_setup;
+    // BattleSetupData spectator[10];
+    // int spectator_count = 0;
     memset(&my_setup, 0, sizeof(my_setup));
     memset(&peer_setup, 0, sizeof(peer_setup));
 
@@ -284,7 +256,9 @@ int main(void) {
 
     struct sockaddr_in last_peer; int last_peer_len = 0;
     memset(&last_peer, 0, sizeof(last_peer));
-
+    last_peer.sin_family = AF_INET;
+    last_peer.sin_addr.s_addr = INADDR_ANY;
+    last_peer.sin_port = htons(9003);
     int seed = 12345;
 
     if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
@@ -306,19 +280,22 @@ int main(void) {
         setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char*)&yes, sizeof(yes));
     }
 
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(HOST_PORT);
-    addr.sin_addr.s_addr = INADDR_ANY; // crucial: bind to any so broadcast packets to 255.255.255.255:9002 arrive
+    memset(&from, 0, sizeof(from));
+    from.sin_family = AF_INET;
+    from.sin_port = htons(9002);
+    from.sin_addr.s_addr = INADDR_ANY; // crucial: bind to any so broadcast packets to 255.255.255.255:9002 arrive
 
-    if (bind(sock, (SOCKADDR*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+    if (bind(sock, (SOCKADDR*)&from, sizeof(from)) == SOCKET_ERROR) {
         printf("bind() failed: %d\n", WSAGetLastError());
         closesocket(sock);
         WSACleanup();
         return 1;
     }
 
-    printf("Host listening on 0.0.0.0:%d (receives unicast and broadcast to this port)\n", HOST_PORT);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+
+    printf("Host listening on 0.0.0.0:9002 (receives unicast and broadcast to this port)\n");
     printf("Waiting for handshake request...\n");
     printf("Note that to continue messaging, press any key!\n");
     while (!is_game_over) {
@@ -342,6 +319,8 @@ int main(void) {
             memset(recvbuf, 0, sizeof(recvbuf));
             from_len = sizeof(from);
             int br = recvfrom(sock, recvbuf, sizeof(recvbuf)-1, 0, (SOCKADDR*)&from, &from_len);
+            addr.sin_addr = from.sin_addr;
+            addr.sin_port = ntohs(from.sin_port);
             if (br > 0) {
                 clean_newline(recvbuf);
                 vprint("\n[VERBOSE] Received raw (%d) from %s:%d\n%s\n", br, inet_ntoa(from.sin_addr), ntohs(from.sin_port), recvbuf);
@@ -350,16 +329,22 @@ int main(void) {
                 if (!mt) continue;
 
                 // save last peer for unicast replies
-                last_peer = from;
-                last_peer_len = from_len;
+                
 
                 if (!strncmp(mt, "HANDSHAKE_REQUEST", strlen("HANDSHAKE_REQUEST"))) {
                     printf("[HOST] HANDSHAKE_REQUEST from %s:%d\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port));
                     // reply with handshake_response
                     snprintf(fullmsg, sizeof(fullmsg), "message_type: HANDSHAKE_RESPONSE\nseed: %d\n", seed);
-                    sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup);
+                    last_peer = from;
+                    sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup, false);
                     is_handshake_done = true;
-                    printf("[HOST] HANDSHAKE_RESPONSE sent to %s:%d\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port));
+                    printf("[HOST] HANDSHAKE_RESPONSE sent to %s:%d\n", inet_ntoa(last_peer.sin_addr), ntohs(last_peer.sin_port));
+                }else if (!strncmp(mt, "SPECTATOR_REQUEST", strlen("SPECTATOR_REQUEST"))) {
+                    printf("[HOST] SPECTATOR_REQUEST from %s:%d\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port));
+                    snprintf(fullmsg,sizeof(fullmsg),"message_type: SPECTATOR_RESPONSE");
+                    last_peer = from;
+                    sendMessageAuto(fullmsg, &last_peer,last_peer_len,my_setup,false);
+                    printf("[HOST] SPECTATOR_RESPONSE sent to %s:%d\n", inet_ntoa(last_peer.sin_addr), ntohs(last_peer.sin_port));
                 }
                 else if (!strncmp(mt, "BATTLE_SETUP", strlen("BATTLE_SETUP"))) {
                     printf("[HOST] Received BATTLE_SETUP from %s:%d\n%s\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port), recvbuf);
@@ -400,6 +385,7 @@ int main(void) {
             // Allow host to send BATTLE_SETUP after handshake
             if (!strcmp(line, "BATTLE_SETUP") && is_handshake_done) {
                 // gather fields
+                battle_setup_received = true;
                 printf("communication_mode (P2P/BROADCAST): ");
                 if (!fgets(my_setup.communicationMode, sizeof(my_setup.communicationMode), stdin)) continue;
                 clean_newline(my_setup.communicationMode);
@@ -430,15 +416,14 @@ int main(void) {
                     "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }\n",
                     my_setup.communicationMode, my_setup.pokemonName,
                     my_setup.boosts.specialAttack, my_setup.boosts.specialDefense);
-
                 // For setup we unicast to last_peer (joiner)
                 if (last_peer_len > 0) {
-                    sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup);
+                    sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup,true);
                     is_battle_started = true;
-                    printf("[HOST] BATTLE_SETUP sent to %s:%d\n", inet_ntoa(last_peer.sin_addr), ntohs(last_peer.sin_port));
                 } else {
                     printf("[HOST] No known peer to send BATTLE_SETUP to (wait for HANDSHAKE_REQUEST first)\n");
                 }
+                battle_setup_received = true;
                 continue;
             }
 
@@ -467,7 +452,7 @@ int main(void) {
                              sender, message_text, seq++);
 
                     // send according to my_setup (host's chosen mode)
-                    sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup);
+                    sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup,true);
                     printf("[HOST] Sent CHAT_MESSAGE (TEXT).\n");
                 }
                 else if (!strcmp(content_type, "STICKER")) {
@@ -499,7 +484,7 @@ int main(void) {
                              "message_type: CHAT_MESSAGE\nsender_name: %s\ncontent_type: STICKER\nsticker_data: %s\nsequence_number: %d\n",
                              sender, b64, seq++);
 
-                    sendMessageAuto(bigmsg,&last_peer, last_peer_len, my_setup);
+                    sendMessageAuto(bigmsg,&last_peer, last_peer_len, my_setup,true);
                     printf("[HOST] Sent CHAT_MESSAGE (STICKER).\n");
                     free(bigmsg);
                     free(b64);
@@ -522,7 +507,7 @@ int main(void) {
 
             // Quick small message: treat typed line as message_type and send it
             snprintf(fullmsg, sizeof(fullmsg), "message_type: %s\n", line);
-            sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup);
+            sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup,false);
         }
     }
 

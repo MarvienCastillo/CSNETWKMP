@@ -13,7 +13,7 @@
 #pragma comment(lib, "Ws2_32.lib")
 
 #define MaxBufferSize 1024
-
+#define MAX_SPECTATORS 10 
 typedef struct {
     int specialAttack;
     int specialDefense;
@@ -31,21 +31,24 @@ bool is_battle_started = false;
 bool is_game_over = false;
 bool VERBOSE_MODE = false;
 
-// Broadcast auto-port system (Option B1)
-static int NEXT_BROADCAST_PORT = 9006;
-int my_broadcast_port = 0;
+
 
 SOCKET socket_network = INVALID_SOCKET;   // unicast
-SOCKET broadcast_socket = INVALID_SOCKET; // broadcast listener
 
 struct sockaddr_in broadcast_recv_addr;
 
 
+
+
 // Global variables
 int seed = 0;
+// Add this near your existing global variables or inside main() for better scope
+struct sockaddr_in spectator_list[MAX_SPECTATORS];
+int spectator_count = 0;
 bool isSpectator = false;
 struct sockaddr_in hostAddr, from;
 int fromLen = sizeof(from);
+bool battle_setup_received = false;
 // ----------------------------------------------------
 // Verbose printing helper
 // ----------------------------------------------------
@@ -231,6 +234,7 @@ void getInputBattleSetup(BattleSetupData *s) {
 }
 
 void processBattleSetup(char *msg, BattleSetupData *s) {
+    
     sscanf(strstr(msg, "communication_mode:"), "communication_mode: %31[^\n]",
            s->communicationMode);
     sscanf(strstr(msg, "pokemon_name:"), "pokemon_name: %63[^\n]",
@@ -251,15 +255,15 @@ void processBattleSetup(char *msg, BattleSetupData *s) {
 void sendMessageAuto(const char *msg,
                      struct sockaddr_in *hostAddr,
                      int hostLen,
-                     BattleSetupData setup)
+                     BattleSetupData setup, bool isBroadcast)
 {
     // BROADCAST MODE
-    if (!strcmp(setup.communicationMode, "BROADCAST")) {
+    if (!strcmp(setup.communicationMode, "BROADCAST") || !battle_setup_received || isBroadcast) {
         struct sockaddr_in bc;
         memset(&bc, 0, sizeof(bc));
         bc.sin_family = AF_INET;
-        bc.sin_port = htons(9006);            // host listens on 9006
-        bc.sin_addr.s_addr = INADDR_BROADCAST;
+        bc.sin_port = htons(9002);            // host listens on 9002
+        bc.sin_addr.s_addr =  inet_addr("255.255.255.255");
 
         int enable = 1;
         setsockopt(socket_network, SOL_SOCKET, SO_BROADCAST,
@@ -288,7 +292,7 @@ void sendMessageAuto(const char *msg,
 void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_len) {
     char *type = get_message_type(msg);
     if (!type) return;
-               
+    printf("========================================\n");
     // HANDSHAKE_RESPONSE
     if (!strncmp(type, "HANDSHAKE_RESPONSE", strlen("HANDSHAKE_RESPONSE"))) {
         char *seed_ptr = strstr(msg, "seed: ");
@@ -300,6 +304,11 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
                inet_ntoa(from_addr->sin_addr), ntohs(from_addr->sin_port));
         printf("[JOINER] Received seed: %d\n", seed);
         
+    }
+    else if(!strncmp(type, "SPECTATOR_RESPONSE", strlen("SPECTATOR_RESPONSE"))) {
+        isSpectator = true;
+        printf("[JOINER] Registered as spectator with host %s:%d\n",
+               inet_ntoa(from_addr->sin_addr), ntohs(from_addr->sin_port));
     }
     // BATTLE_SETUP
     else if (!strncmp(type, "BATTLE_SETUP", strlen("BATTLE_SETUP"))) {
@@ -313,6 +322,7 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
     else if (!strncmp(type, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
         processChatMessage(msg);
     }
+    printf("========================================\n");
 }
 
 void inputChatMessage(char *outbuf, BattleSetupData setup, struct sockaddr_in hostAddr, int hostLen) {
@@ -343,7 +353,7 @@ void inputChatMessage(char *outbuf, BattleSetupData setup, struct sockaddr_in ho
             sender, text, seq++
         );
 
-        sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup);
+        sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,true);
         printf("[JOINER] Sent TEXT chat.\n");
     }
 
@@ -385,7 +395,7 @@ void inputChatMessage(char *outbuf, BattleSetupData setup, struct sockaddr_in ho
 
         free(b64);
 
-        sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup);
+        sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,true);
         printf("[JOINER] Sent STICKER chat.\n");
     }
     else{
@@ -401,6 +411,7 @@ int main() {
     WSADATA wsa;
     BattleSetupData setup;
     BattleSetupData host_setup;
+    int spectator_count = 0;
     char receive[2048];
     char input[MaxBufferSize];
     char outbuf[2048];
@@ -420,47 +431,48 @@ int main() {
         return 1;
     }
 
-    // Bind unicast socket to any free port
-    struct sockaddr_in local;
-    memset(&local, 0, sizeof(local));
-    local.sin_family = AF_INET;
-    local.sin_addr.s_addr = INADDR_ANY;
-    local.sin_port = htons(0);
-
-    if (bind(socket_network, (SOCKADDR*)&local, sizeof(local)) == SOCKET_ERROR) {
-        printf("bind() failed: %d\n", WSAGetLastError());
-        return 1;
-    }
 
     // ------------------------------
     // SETUP BROADCAST LISTENER SOCKET (Option B1)
     // ------------------------------
-    broadcast_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-    my_broadcast_port = NEXT_BROADCAST_PORT++;
-
+    // listening
     memset(&broadcast_recv_addr, 0, sizeof(broadcast_recv_addr));
     broadcast_recv_addr.sin_family = AF_INET;
     broadcast_recv_addr.sin_addr.s_addr = INADDR_ANY;
-    broadcast_recv_addr.sin_port = htons(0);
+    broadcast_recv_addr.sin_port = htons(9003);
+    int from_len = sizeof(broadcast_recv_addr);
+    int optVal = 1; // Set to 1 to enable the option
+    int optLen = sizeof(optVal);
 
-    if (bind(broadcast_socket, (SOCKADDR*)&broadcast_recv_addr,
+    // Set the SO_REUSEADDR option
+    if (setsockopt(socket_network, SOL_SOCKET, SO_REUSEADDR, (char*)&optVal, optLen) == SOCKET_ERROR)
+    {
+        printf("[ERROR] setsockopt(SO_REUSEADDR) failed: %d\n", WSAGetLastError());
+        // Handle error, but proceed to bind attempt
+    }
+    if (bind(socket_network, (SOCKADDR*)&broadcast_recv_addr,
              sizeof(broadcast_recv_addr)) == SOCKET_ERROR)
     {
-        printf("[ERROR] Could not bind broadcast listener port %d\n",
-               my_broadcast_port);
+        printf("[ERROR] Could not bind broadcast listener port.\n");
         return 1;
     }
     int len = sizeof(broadcast_recv_addr);
-    getsockname(broadcast_socket, (SOCKADDR*)&broadcast_recv_addr, &len);
+    getsockname(socket_network, (SOCKADDR*)&broadcast_recv_addr, &len);
     printf("[JOINER] Listening for broadcast on port %d.\n", ntohs(broadcast_recv_addr.sin_port));
 
     // Host address
     memset(&hostAddr, 0, sizeof(hostAddr));
     hostAddr.sin_family = AF_INET;
-    hostAddr.sin_port = htons(9006);
-    hostAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    hostAddr.sin_port = htons(9002);
+    hostAddr.sin_addr.s_addr = INADDR_ANY;
 
+    
+    struct sockaddr_in spectator;
+    memset(&spectator, 0, sizeof(spectator));
+    spectator.sin_family = AF_INET;
+    spectator.sin_family = inet_addr("255.255.255.255");
+    spectator.sin_port = htons(9002);
     printf("Joiner ready. Type HANDSHAKE_REQUEST or SPECTATOR_REQUEST to start handshake.\n");
     printf("Note that to continue messaging, press any key!\n");
     while (!is_game_over) {
@@ -469,7 +481,6 @@ int main() {
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(socket_network, &readfds);
-        FD_SET(broadcast_socket, &readfds);
 
         struct timeval tv;
         tv.tv_sec = 0;
@@ -482,32 +493,18 @@ int main() {
             break;
         }
 
-        // UNICAST RECEIVE
-        if (FD_ISSET(socket_network, &readfds) && !isSpectator) {
-            memset(receive, 0, sizeof(receive));
-            int rec = recvfrom(socket_network, receive, sizeof(receive)-1,
-                               0, (SOCKADDR*)&from, &fromLen);
-
-            if (rec > 0) {
-                clean_newline(receive);
-                printf("[JOINER] Received unicast message from %s:%d\n",
-                       inet_ntoa(from.sin_addr), ntohs(from.sin_port));
-                processReceivedMessage(receive, &from, fromLen);
-            }
-        }
 
         // BROADCAST RECEIVE
-        if (FD_ISSET(broadcast_socket, &readfds) && !isSpectator) {
+        if (FD_ISSET(socket_network, &readfds) && is_handshake_done) {
             memset(receive, 0, sizeof(receive));
-            int rec = recvfrom(broadcast_socket, receive, sizeof(receive)-1,
-                               0, (SOCKADDR*)&from, &fromLen);
+            int rec = recvfrom(socket_network, receive, sizeof(receive)-1,
+                               0, (SOCKADDR*)&broadcast_recv_addr, &from_len);
 
             if (rec > 0) {
                 clean_newline(receive);
-                printf("[JOINER] Received broadcast message from %s:%d\n",
-                       inet_ntoa(from.sin_addr), ntohs(from.sin_port));
-                processReceivedMessage(receive, &from, fromLen);
-                // Future: broadcast battle events
+                printf("[JOINER] Received message from %s:%d -> %s\n ",
+                       inet_ntoa(from.sin_addr), ntohs(from.sin_port), receive);
+                processReceivedMessage(receive, &broadcast_recv_addr, fromLen);
             }
         }
 
@@ -525,15 +522,16 @@ int main() {
                 if (!strcmp(input, "HANDSHAKE_REQUEST")) {
 
                     sprintf(outbuf, "message_type: HANDSHAKE_REQUEST\n");
-
-                    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup);
+                    is_handshake_done = true;
+                    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,false);
 
                     printf("[JOINER] HANDSHAKE_REQUEST sent.\n");
                 } else if(!strcmp(input, "SPECTATOR_REQUEST")) {
-
+                    is_handshake_done = true;
+                    isSpectator = true;
                     sprintf(outbuf, "message_type: SPECTATOR_REQUEST\n");
 
-                    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup);
+                    sendMessageAuto(outbuf, &spectator, sizeof(spectator), setup,false);
 
                     printf("[JOINER] SPECTATOR_REQUEST sent.\n");
                 }
@@ -541,7 +539,6 @@ int main() {
                 else if (!strcmp(input, "BATTLE_SETUP") && is_handshake_done) {
 
                     getInputBattleSetup(&setup);
-
                     sprintf(outbuf,
                         "message_type: BATTLE_SETUP\n"
                         "communication_mode: %s\n"
@@ -553,7 +550,8 @@ int main() {
                         setup.boosts.specialDefense
                     );
 
-                    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup);
+                    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,false);
+                    battle_setup_received = true;
                     printf("[JOINER] Sent BATTLE_SETUP.\n");
                 }
 
@@ -574,7 +572,7 @@ int main() {
 
                 else {
                     printf("[JOINER] Sending command.\n");
-                    sendMessageAuto(input, &hostAddr, sizeof(hostAddr), setup);
+                    sendMessageAuto(input, &hostAddr, sizeof(hostAddr), setup,true);
                 }
             }
             else{
@@ -596,7 +594,7 @@ int main() {
     }
 
     closesocket(socket_network);
-    closesocket(broadcast_socket);
+    closesocket(socket_network);
     WSACleanup();
     return 0;
 }
