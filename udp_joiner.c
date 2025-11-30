@@ -127,6 +127,8 @@ void saveSticker(const char *b64, const char *sender) {
     fclose(fp);
 
     printf("[STICKER] Sticker received from %s → saved as %s\n", sender, filename);
+    
+    vprint("[VERBOSE] Sticker saved from %s, bytes=%zu\n", sender, out_len);
 }
 
 /*
@@ -313,10 +315,10 @@ int main() {
                     is_handshake_done = true; // <--- important
                     // remember host address for future messages
                     // from_host already filled by recvfrom
-                    printf("[JOINER] HANDSHAKE_RESPONSE received from %s:%d (seed=%d)\n",
+                    printf("\n[JOINER] HANDSHAKE_RESPONSE received from %s:%d (seed=%d)\n",
                            inet_ntoa(from_host.sin_addr), ntohs(from_host.sin_port), seed);
                 } else if (!strncmp(msg, "BATTLE_SETUP", strlen("BATTLE_SETUP")) && is_handshake_done) {
-                    printf("[JOINER] BATTLE_SETUP received:\n%s\n", receive);
+                    printf("\n[JOINER] BATTLE_SETUP received:\n%s\n", receive);
                     processBattleSetup(receive, &host_setup);
                     is_battle_started = true;
                 } else if (!strncmp(msg, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
@@ -336,7 +338,7 @@ int main() {
         }
 
         // Allow user to type commands
-        printf("message_type: ");
+        printf("\nmessage_type: ");
         if (fgets(buffer, MaxBufferSize, stdin) != NULL) {
             clean_newline(buffer);
 
@@ -346,9 +348,9 @@ int main() {
                 int sent = sendto(socket_network, full_message, (int)strlen(full_message), 0,
                                   (SOCKADDR*)&server_address, serverSize);
                 if (sent == SOCKET_ERROR) {
-                    printf("[JOINER] sendto() failed: %d\n", WSAGetLastError());
+                    printf("\n[JOINER] sendto() failed: %d\n", WSAGetLastError());
                 } else {
-                    printf("[JOINER] HANDSHAKE_REQUEST sent to %s:%d\n",
+                    printf("\n[JOINER] HANDSHAKE_REQUEST sent to %s:%d\n",
                            inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));
                     vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
                 }
@@ -368,7 +370,7 @@ int main() {
                 if (sent == SOCKET_ERROR) {
                     printf("[JOINER] sendto() failed: %d\n", WSAGetLastError());
                 } else {
-                    printf("[JOINER] BATTLE_SETUP sent to host %s:%d\n",
+                    printf("\n[JOINER] BATTLE_SETUP sent to host %s:%d\n",
                            inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));
                     vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
                     is_battle_started = true;
@@ -400,8 +402,7 @@ int main() {
 
                     int sent = sendto(socket_network, full_message, strlen(full_message), 0,
                         (SOCKADDR*)&server_address, serverSize);
-                    printf("[JOINER] Sent TEXT message.\n");
-                    vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
+                    printf("\n[JOINER] Sent TEXT message.\n");
 
                 } else if (strcmp(content_type, "STICKER") == 0) {
                     char path[256];
@@ -447,8 +448,7 @@ int main() {
                         (SOCKADDR*)&server_address, serverSize);
                     free(b64);
 
-                    printf("[JOINER] Sent STICKER message.\n");
-                    vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
+                    printf("\n[JOINER] Sent STICKER message.\n");
                 } else {
                     printf("[ERROR] Invalid content_type. Must be TEXT or STICKER.\n");
                 }

@@ -128,6 +128,8 @@ void saveSticker(const char *b64, const char *sender) {
     free(data);
 
     printf("[STICKER] Sticker received from %s → saved as %s\n", sender, filename);
+    
+    vprint("[VERBOSE] Sticker saved from %s, bytes=%zu\n", sender, out_len);
 }
 
 char *get_message_type(char *message) {
@@ -348,7 +350,7 @@ int main() {
                     }
                 } else if (strcmp(buffer, "quit") == 0) {
                     break;
-                } else if (!strcmp(buffer, "CHAT_MESSAGE")) {
+                } else if (strcmp(buffer, "CHAT_MESSAGE")) {
                     char sender[64] = "Player 1";
                     char content_type[16];
 
