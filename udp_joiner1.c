@@ -464,10 +464,10 @@ int main() {
     // Host address
     memset(&hostAddr, 0, sizeof(hostAddr));
     hostAddr.sin_family = AF_INET;
-    hostAddr.sin_port = htons(9002);
     hostAddr.sin_addr.s_addr = INADDR_ANY;
+    hostAddr.sin_port = htons(0);
 
-    
+    // sending addr for spectator
     struct sockaddr_in spectator;
     memset(&spectator, 0, sizeof(spectator));
     spectator.sin_family = AF_INET;
@@ -520,7 +520,7 @@ int main() {
 
                 // HANDSHAKE_REQUEST
                 if (!strcmp(input, "HANDSHAKE_REQUEST")) {
-
+                    isSpectator = false;
                     sprintf(outbuf, "message_type: HANDSHAKE_REQUEST\n");
                     is_handshake_done = true;
                     sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,false);
@@ -528,7 +528,7 @@ int main() {
                     printf("[JOINER] HANDSHAKE_REQUEST sent.\n");
                 } else if(!strcmp(input, "SPECTATOR_REQUEST")) {
                     is_handshake_done = true;
-                    isSpectator = true;
+                
                     sprintf(outbuf, "message_type: SPECTATOR_REQUEST\n");
 
                     sendMessageAuto(outbuf, &spectator, sizeof(spectator), setup,false);

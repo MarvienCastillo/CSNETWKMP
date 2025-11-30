@@ -385,6 +385,7 @@ int main(void) {
             // Allow host to send BATTLE_SETUP after handshake
             if (!strcmp(line, "BATTLE_SETUP") && is_handshake_done) {
                 // gather fields
+                printf("Current address %s: port: %d", inet_ntoa(last_peer.sin_addr), ntohs(last_peer.sin_port));
                 battle_setup_received = true;
                 printf("communication_mode (P2P/BROADCAST): ");
                 if (!fgets(my_setup.communicationMode, sizeof(my_setup.communicationMode), stdin)) continue;
@@ -417,12 +418,9 @@ int main(void) {
                     my_setup.communicationMode, my_setup.pokemonName,
                     my_setup.boosts.specialAttack, my_setup.boosts.specialDefense);
                 // For setup we unicast to last_peer (joiner)
-                if (last_peer_len > 0) {
-                    sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup,true);
-                    is_battle_started = true;
-                } else {
-                    printf("[HOST] No known peer to send BATTLE_SETUP to (wait for HANDSHAKE_REQUEST first)\n");
-                }
+                sendMessageAuto(fullmsg,&last_peer, sizeof(last_peer), my_setup,true);
+                is_battle_started = true;
+                
                 battle_setup_received = true;
                 continue;
             }
