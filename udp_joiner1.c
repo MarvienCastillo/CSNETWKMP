@@ -10,6 +10,9 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <conio.h>
+#include "BattleManager.h"
+
+
 #pragma comment(lib, "Ws2_32.lib")
 
 #define MaxBufferSize 1024
@@ -25,6 +28,14 @@ typedef struct {
     StatBoosts boosts;
 } BattleSetupData;
 
+void sendMessageAuto(const char *msg,
+                     struct sockaddr_in *hostAddr,
+                     int hostLen,
+                     BattleSetupData setup,
+                     bool isBroadcast);
+
+BattleManager bm;
+bool battle_manager_initialized = false;
 // Game state flags
 bool is_handshake_done = false;
 bool is_battle_started = false;
@@ -158,14 +169,6 @@ void saveSticker(const char *b64, const char *sender) {
 // ----------------------------------------------------
 // Helper functions
 // ----------------------------------------------------
-void clean_newline(char *str) {
-    size_t len = strlen(str);
-    while (len > 0 &&
-          (str[len-1] == '\n' || str[len-1] == '\r')) {
-        str[len-1] = '\0';
-        len--;
-    }
-}
 
 char *get_message_type(char *msg) {
     char *p = strstr(msg, "message_type: ");
@@ -201,6 +204,30 @@ void processChatMessage(char *msg) {
         if (!p_data) return;
 
         saveSticker(p_data + strlen("sticker_data: "), sender);
+    }
+}
+void processBattleMessage(const char *msg, BattleSetupData *setup, struct sockaddr_in *peer, int peer_len) {
+    if (!battle_manager_initialized || !msg) return;
+
+    char *mt = strstr(msg, "message_type: ");
+    if (!mt) return;
+    mt += strlen("message_type: ");
+
+    // Only process battle-related messages
+    if (!strncmp(mt, "ATTACK_ANNOUNCE", 15) ||
+        !strncmp(mt, "DEFENSE_ANNOUNCE", 16) ||
+        !strncmp(mt, "CALCULATION_REPORT", 18) ||
+        !strncmp(mt, "CALCULATION_CONFIRM", 19) ||
+        !strncmp(mt, "RESOLUTION_REQUEST", 18) ||
+        !strncmp(mt, "GAME_OVER", 9))
+    {
+        BattleManager_HandleIncoming(&bm, msg);
+
+        const char *out = BattleManager_GetOutgoingMessage(&bm);
+        if (out && strlen(out) > 0 && setup && peer) {
+            sendMessageAuto(out, peer, peer_len, *setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
+        }
     }
 }
 
@@ -293,7 +320,7 @@ void sendMessageAuto(const char *msg,
     else
         printf("[JOINER] Unicast message sent.\n");
 }
-void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_len) {
+void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_len, BattleSetupData *setup) {
     char *type = get_message_type(msg);
     if (!type) return;
     printf("========================================\n");
@@ -318,9 +345,15 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
         BattleSetupData host_setup;
         processBattleSetup(msg, &host_setup);
         printf("[JOINER] Received BATTLE_SETUP from host.\n");
-    
-    }
+        
+        if(!battle_manager_initialized){
+        BattleManager_Init(&bm, 0, setup->pokemonName);
 
+        battle_manager_initialized = true;
+
+        processBattleMessage(msg, setup, &broadcast_recv_addr, fromLen);
+    }
+    }
     // CHAT_MESSAGE
     else if (!strncmp(type, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
         processChatMessage(msg);
@@ -519,7 +552,7 @@ int main() {
 
             if (rec > 0) {
                 clean_newline(receive);
-                processReceivedMessage(receive, &broadcast_recv_addr, fromLen);
+                processReceivedMessage(receive, &broadcast_recv_addr, fromLen, &setup);
             }
         }
 
@@ -569,7 +602,18 @@ int main() {
                     battle_setup_received = true;
                     printf("[JOINER] Sent BATTLE_SETUP.\n");
                 }
+                else if (battle_manager_initialized && bm.ctx.isMyTurn &&
+         bm.ctx.currentState == STATE_WAITING_FOR_MOVE) {
 
+    BattleManager_HandleUserInput(&bm, input);
+
+    const char *out = BattleManager_GetOutgoingMessage(&bm);
+    if (out && strlen(out) > 0) {
+        sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
+        BattleManager_ClearOutgoingMessage(&bm);
+    }
+}
+                
                 // CHAT_MESSAGE
                 else if (!strcmp(input, "CHAT_MESSAGE")) {
                     inputChatMessage(outbuf, setup, hostAddr, sizeof(hostAddr));

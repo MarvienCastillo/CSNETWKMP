@@ -13,6 +13,9 @@ gcc udp_host1.c -o host.exe -lws2_32
 
 gcc udp_joiner1.c -o joiner.exe -lws2_32
 
+gcc udp_host1.c BattleManager.c -o host.exe -lws2_32
+gcc udp_joiner1.c BattleManager.c -o joiner.exe -lws2_32
+
 Then run in this order:
 
 > host

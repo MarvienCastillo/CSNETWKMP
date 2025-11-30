@@ -2,6 +2,8 @@
 #include <string.h>
 #include <winsock2.h>
 #include "pokemon_data.h"
+#include "BattleManager.h"
+
 
 #define MAX_BUFFER 2048
 

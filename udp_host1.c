@@ -12,10 +12,11 @@
 #include <conio.h>
 #include <stdbool.h>
 #pragma comment(lib, "Ws2_32.lib")
-
+#include "BattleManager.h"
 #define MAXBUF 4096
 #define HOST_PORT 9006
 #define BROADCAST_IP "255.255.255.255"
+
 
 #define MAX_SPECTATORS 10 
 
@@ -25,9 +26,13 @@ typedef struct {
 } StatBoosts;
 
 typedef struct {
-    char communicationMode[32]; // "P2P" or "BROADCAST"
+    char communicationMode[32];
     char pokemonName[64];
-    StatBoosts boosts;
+    struct {
+        int specialAttack;
+        int specialDefense;
+    } boosts;
+    Pokemon *pokemonData;
 } BattleSetupData;
 
 static const char b64_table[] =
@@ -139,10 +144,7 @@ void saveSticker(const char *b64, const char *sender) {
 }
 
 /* ---------------- helpers ---------------- */
-void clean_newline(char *s) {
-    size_t n = strlen(s);
-    while (n > 0 && (s[n-1] == '\n' || s[n-1] == '\r')) { s[n-1] = '\0'; n = strlen(s); }
-}
+
 
 char *get_message_type(char *msg) {
     char *p = strstr(msg, "message_type: ");
@@ -172,6 +174,7 @@ void processChatMessage(char *msg) {
         char *b64 = p_data + strlen("sticker_data: ");
         clean_newline(b64);
         saveSticker(b64, sender[0] ? sender : "unknown");
+        
     } else {
         printf("[CHAT] Unknown content_type: %s\n", type);
     }
@@ -242,9 +245,14 @@ int main(void) {
     WSADATA wsa;
     struct sockaddr_in addr, from;
     int from_len = sizeof(from);
+    bool battlemanager_initialized = false;
 
-    BattleSetupData my_setup;
-    BattleSetupData peer_setup;
+BattleSetupData my_setup;
+BattleSetupData peer_setup;
+
+BattleManager bm;
+BattleManager_Init(&bm, 1, my_setup.pokemonName);
+
     // BattleSetupData spectator[10];
     // int spectator_count = 0;
     memset(&my_setup, 0, sizeof(my_setup));
@@ -313,6 +321,7 @@ int main(void) {
             printf("select() error: %d\n", WSAGetLastError());
             break;
         }
+        
 
         // socket ready
         if (FD_ISSET(sock, &readfds)) {
@@ -373,11 +382,22 @@ int main(void) {
                     printf("\n[SYSTEM] Verbose mode disabled.\n");
                 }
                 else {
+                
+                // BattleManager will parse and possibly generate an outgoing message
+                if (battlemanager_initialized) {
+                BattleManager_HandleIncoming(&bm, recvbuf);
+                const char *out = BattleManager_GetOutgoingMessage(&bm);
+                if (out && strlen(out) > 0) {
+                sendMessageAuto(out, &last_peer, last_peer_len, my_setup, false);
+                BattleManager_ClearOutgoingMessage(&bm);
+}
+                else {
                     // other messages
                     printf("[HOST] Received message from %s:%d -> %s\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port), recvbuf);
                 }
             }
         }
+    }
 
         // keyboard input handling
         if (_kbhit()) {
@@ -424,12 +444,39 @@ int main(void) {
                     "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }\n",
                     my_setup.communicationMode, my_setup.pokemonName,
                     my_setup.boosts.specialAttack, my_setup.boosts.specialDefense);
+
+                    // Initialize BattleManager for host (player 1) using the host's chosen pokemon
+                    BattleManager_Init(&bm, 1, my_setup.pokemonName);
+                    battlemanager_initialized = true;
+
                 // For setup we unicast to last_peer (joiner)
                 sendMessageAuto(fullmsg,&last_peer, sizeof(last_peer), my_setup,true);
                 is_battle_started = true;
                 
                 battle_setup_received = true;
                 continue;
+            }
+
+
+                // Host sending a MOVE using BattleManager
+                if (!strcmp(line, "MOVE")) {
+                if (!battlemanager_initialized) {
+                printf("[HOST] BattleManager not initialized yet. Send BATTLE_SETUP first.\n");
+                continue;
+                }
+                char moveName[128];
+                printf("Move name: ");
+                if (!fgets(moveName, sizeof(moveName), stdin)) continue;
+                clean_newline(moveName);
+
+
+                BattleManager_HandleUserInput(&bm, moveName);
+                const char *out = BattleManager_GetOutgoingMessage(&bm);
+                if (out && strlen(out) > 0) {
+                sendMessageAuto(out, &last_peer, last_peer_len, my_setup, false);
+                BattleManager_ClearOutgoingMessage(&bm);
+                }
+            continue;
             }
 
             // CHAT_MESSAGE (host sending)
@@ -527,8 +574,9 @@ int main(void) {
             sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup,false);
         }
     }
-
+        }
     closesocket(sock);
     WSACleanup();
     return 0;
 }
+    
