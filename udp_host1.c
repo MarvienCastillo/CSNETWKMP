@@ -202,7 +202,7 @@ void processBattleSetup(char *msg, BattleSetupData *out) {
  (Host is authoritative about current communication_mode stored in my_setup)
 */
 void sendMessageAuto(const char *msg,
-                     struct sockaddr_in *hostAddr,
+                     struct sockaddr_in hostAddr,
                      int hostLen,
                      BattleSetupData setup, bool isBroadcast)
 {
@@ -231,7 +231,7 @@ void sendMessageAuto(const char *msg,
 
     // UNICAST MODE
     int sent = sendto(sock, msg, strlen(msg), 0,
-                      (SOCKADDR*)hostAddr, hostLen);
+                      (SOCKADDR*)&hostAddr, hostLen);
 
     if (sent == SOCKET_ERROR)
         printf("[HOST] Unicast send failed: %d\n", WSAGetLastError());
@@ -247,11 +247,11 @@ int main(void) {
     int from_len = sizeof(from);
     bool battlemanager_initialized = false;
 
-BattleSetupData my_setup;
-BattleSetupData peer_setup;
+    BattleSetupData my_setup;
+    BattleSetupData peer_setup;
 
-BattleManager bm;
-BattleManager_Init(&bm, 1, my_setup.pokemonName);
+    BattleManager bm;
+    BattleManager_Init(&bm, 1, my_setup.pokemonName);
 
     // BattleSetupData spectator[10];
     // int spectator_count = 0;
@@ -345,14 +345,14 @@ BattleManager_Init(&bm, 1, my_setup.pokemonName);
                     // reply with handshake_response
                     snprintf(fullmsg, sizeof(fullmsg), "message_type: HANDSHAKE_RESPONSE\nseed: %d\n", seed);
                     last_peer = from;
-                    sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup, false);
+                    sendMessageAuto(fullmsg,last_peer, last_peer_len, my_setup, false);
                     is_handshake_done = true;
                     printf("[HOST] HANDSHAKE_RESPONSE sent to %s:%d\n", inet_ntoa(last_peer.sin_addr), ntohs(last_peer.sin_port));
                 }else if (!strncmp(mt, "SPECTATOR_REQUEST", strlen("SPECTATOR_REQUEST"))) {
                     printf("[HOST] SPECTATOR_REQUEST from %s:%d\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port));
                     snprintf(fullmsg,sizeof(fullmsg),"message_type: SPECTATOR_RESPONSE");
                     last_peer = from;
-                    sendMessageAuto(fullmsg, &last_peer,last_peer_len,my_setup,false);
+                    sendMessageAuto(fullmsg, last_peer,last_peer_len,my_setup,false);
                     printf("[HOST] SPECTATOR_RESPONSE sent to %s:%d\n", inet_ntoa(last_peer.sin_addr), ntohs(last_peer.sin_port));
                 }
                 else if (!strncmp(mt, "BATTLE_SETUP", strlen("BATTLE_SETUP"))) {
@@ -366,7 +366,7 @@ BattleManager_Init(&bm, 1, my_setup.pokemonName);
                         "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }\n",
                         peer_setup, peer_setup.pokemonName,
                         peer_setup.boosts.specialAttack, peer_setup.boosts.specialDefense);
-                    sendMessageAuto(recvbuf,&last_peer,last_peer_len,peer_setup,true);
+                    sendMessageAuto(recvbuf,last_peer,last_peer_len,peer_setup,true);
                     is_battle_started = true;
                 }
                 else if (!strncmp(mt, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
@@ -383,21 +383,23 @@ BattleManager_Init(&bm, 1, my_setup.pokemonName);
                 }
                 else {
                 
-                // BattleManager will parse and possibly generate an outgoing message
-                if (battlemanager_initialized) {
-                BattleManager_HandleIncoming(&bm, recvbuf);
-                const char *out = BattleManager_GetOutgoingMessage(&bm);
-                if (out && strlen(out) > 0) {
-                sendMessageAuto(out, &last_peer, last_peer_len, my_setup, false);
-                BattleManager_ClearOutgoingMessage(&bm);
-}
-                else {
-                    // other messages
-                    printf("[HOST] Received message from %s:%d -> %s\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port), recvbuf);
+                    // BattleManager will parse and possibly generate an outgoing message
+                    if (battlemanager_initialized) {
+                        printf("[HOST] Processing battle message!\n");
+                        BattleManager_HandleIncoming(&bm, recvbuf);
+                        const char *out = BattleManager_GetOutgoingMessage(&bm);
+                        if (out && strlen(out) > 0) {
+                            sendMessageAuto(out, last_peer, last_peer_len, my_setup, false);
+                            BattleManager_ClearOutgoingMessage(&bm);
+                        }
+                    }
+                    else {
+                        // other messages
+                        printf("[HOST] Received message from %s:%d -> %s\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port), recvbuf);
+                    }
                 }
             }
         }
-    }
 
         // keyboard input handling
         if (_kbhit()) {
@@ -450,19 +452,17 @@ BattleManager_Init(&bm, 1, my_setup.pokemonName);
                     battlemanager_initialized = true;
 
                 // For setup we unicast to last_peer (joiner)
-                sendMessageAuto(fullmsg,&last_peer, sizeof(last_peer), my_setup,true);
+                sendMessageAuto(fullmsg,last_peer, sizeof(last_peer), my_setup,true);
                 is_battle_started = true;
                 
                 battle_setup_received = true;
                 continue;
             }
-
-
+            else if(!strcmp(line,"ATTACK_ANNOUNCE")){
                 // Host sending a MOVE using BattleManager
-                if (!strcmp(line, "MOVE")) {
                 if (!battlemanager_initialized) {
-                printf("[HOST] BattleManager not initialized yet. Send BATTLE_SETUP first.\n");
-                continue;
+                    printf("[HOST] BattleManager not initialized yet. Send BATTLE_SETUP first.\n");
+                    continue;
                 }
                 char moveName[128];
                 printf("Move name: ");
@@ -473,10 +473,12 @@ BattleManager_Init(&bm, 1, my_setup.pokemonName);
                 BattleManager_HandleUserInput(&bm, moveName);
                 const char *out = BattleManager_GetOutgoingMessage(&bm);
                 if (out && strlen(out) > 0) {
-                sendMessageAuto(out, &last_peer, last_peer_len, my_setup, false);
-                BattleManager_ClearOutgoingMessage(&bm);
+                    sendMessageAuto(out, last_peer, last_peer_len, my_setup, false);
+                    BattleManager_ClearOutgoingMessage(&bm);
                 }
-            continue;
+            }
+            else if(!strcmp(line,"DEFENSE_ANNOUNCE")){
+                
             }
 
             // CHAT_MESSAGE (host sending)
@@ -504,7 +506,7 @@ BattleManager_Init(&bm, 1, my_setup.pokemonName);
                              sender, message_text, seq++);
 
                     // send according to my_setup (host's chosen mode)
-                    sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup,true);
+                    sendMessageAuto(fullmsg,last_peer, last_peer_len, my_setup,true);
                     printf("[HOST] Sent CHAT_MESSAGE (TEXT).\n");
                 }
                 else if (!strcmp(content_type, "STICKER")) {
@@ -536,7 +538,7 @@ BattleManager_Init(&bm, 1, my_setup.pokemonName);
                              "message_type: CHAT_MESSAGE\nsender_name: %s\ncontent_type: STICKER\nsticker_data: %s\nsequence_number: %d\n",
                              sender, b64, seq++);
 
-                    sendMessageAuto(bigmsg,&last_peer, last_peer_len, my_setup,true);
+                    sendMessageAuto(bigmsg,last_peer, last_peer_len, my_setup,true);
                     printf("[HOST] Sent CHAT_MESSAGE (STICKER).\n");
                     free(bigmsg);
                     free(b64);
@@ -571,10 +573,9 @@ BattleManager_Init(&bm, 1, my_setup.pokemonName);
 
             // Quick small message: treat typed line as message_type and send it
             snprintf(fullmsg, sizeof(fullmsg), "message_type: %s\n", line);
-            sendMessageAuto(fullmsg,&last_peer, last_peer_len, my_setup,false);
+            sendMessageAuto(fullmsg,last_peer, last_peer_len, my_setup,false);
         }
     }
-        }
     closesocket(sock);
     WSACleanup();
     return 0;
