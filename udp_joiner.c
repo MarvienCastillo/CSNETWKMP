@@ -274,7 +274,7 @@ int main() {
     server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     printf("Joiner ready. Type HANDSHAKE_REQUEST to start handshake (or SPECTATOR_REQUEST):\n");
-
+    
     while (!is_game_over) {
         fd_set readfds;
         struct timeval timeout;
@@ -324,11 +324,11 @@ int main() {
                     continue;
                 } else if (!strcmp(msg, "VERBOSE_ON")) {
                     VERBOSE_MODE = true;
-                    printf("[SYSTEM] Verbose mode enabled.\n");
+                    printf("\n[SYSTEM] Verbose mode enabled.\n\n");
                 }
                 else if (!strcmp(msg, "VERBOSE_OFF")) {
                     VERBOSE_MODE = false;
-                    printf("[SYSTEM] Verbose mode disabled.\n");
+                    printf("\n[SYSTEM] Verbose mode disabled.\n");
                 } else {
                     // ignore other messages in this simple version
                 }
@@ -336,7 +336,7 @@ int main() {
         }
 
         // Allow user to type commands
-        printf("\nmessage_type: ");
+        printf("message_type: ");
         if (fgets(buffer, MaxBufferSize, stdin) != NULL) {
             clean_newline(buffer);
 
@@ -454,11 +454,23 @@ int main() {
                 }
             } else if (!strcmp(buffer, "VERBOSE_ON")) {
                 VERBOSE_MODE = true;
-                printf("[SYSTEM] Verbose mode enabled.\n");
+                printf("\n[SYSTEM] Verbose mode enabled.\n");
+
+                // Send to joiner
+                sprintf(full_message, "message_type: VERBOSE_ON\n");
+                int sent = sendto(socket_network, full_message, strlen(full_message), 0,
+                                (SOCKADDR*)&server_address, from_len);
+                vprint("\n[VERBOSE] Sent verbose ON message to joiner (%d bytes)\n%s\n", sent, full_message);
             }
             else if (!strcmp(buffer, "VERBOSE_OFF")) {
                 VERBOSE_MODE = false;
-                printf("[SYSTEM] Verbose mode disabled.\n");
+                printf("\n[SYSTEM] Verbose mode disabled.\n");
+
+                // Send to joiner
+                sprintf(full_message, "message_type: VERBOSE_OFF\n");
+                int sent = sendto(socket_network, full_message, strlen(full_message), 0,
+                                (SOCKADDR*)&server_address, from_len);
+                vprint("\n[VERBOSE] Sent verbose OFF message to joiner (%d bytes)\n%s\n", sent, full_message);
             } else {
                 printf("Unknown or invalid command. Use HANDSHAKE_REQUEST or BATTLE_SETUP (after handshake).\n");
             }

@@ -285,13 +285,13 @@ int main() {
                 } else if (!strncmp(msg, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
                     processChatMessage(receive);
                     continue;
-                } else if (strcmp(msg, "VERBOSE_ON")) {
+                } else if (!strcmp(msg, "VERBOSE_ON")) {
                     VERBOSE_MODE = true;
-                    printf("[SYSTEM] Verbose mode enabled.\n");
+                    printf("\n[SYSTEM] Verbose mode enabled.\n");
                 }
-                else if (strcmp(msg, "VERBOSE_OFF")) {
+                else if (!strcmp(msg, "VERBOSE_OFF")) {
                     VERBOSE_MODE = false;
-                    printf("[SYSTEM] Verbose mode disabled.\n");
+                    printf("\n[SYSTEM] Verbose mode disabled.\n");
                 } else {
                     printf("[HOST] Received message from Joiner: %s\n", receive);
                     // other messages ignored in this simple version
@@ -428,11 +428,23 @@ int main() {
                     }
                 } else if (!strcmp(buffer, "VERBOSE_ON")) {
                     VERBOSE_MODE = true;
-                    printf("[SYSTEM] Verbose mode enabled.\n");
+                    printf("\n[SYSTEM] Verbose mode enabled.\n");
+
+                    // Send to joiner
+                    sprintf(full_message, "message_type: VERBOSE_ON\n");
+                    int sent = sendto(socket_network, full_message, strlen(full_message), 0,
+                                    (SOCKADDR*)&from_joiner, from_len);
+                    vprint("\n[VERBOSE] Sent verbose ON message to joiner (%d bytes)\n%s\n", sent, full_message);
                 }
                 else if (!strcmp(buffer, "VERBOSE_OFF")) {
                     VERBOSE_MODE = false;
-                    printf("[SYSTEM] Verbose mode disabled.\n");
+                    printf("\n[SYSTEM] Verbose mode disabled.\n");
+
+                    // Send to joiner
+                    sprintf(full_message, "message_type: VERBOSE_OFF\n");
+                    int sent = sendto(socket_network, full_message, strlen(full_message), 0,
+                                    (SOCKADDR*)&from_joiner, from_len);
+                    vprint("\n[VERBOSE] Sent verbose OFF message to joiner (%d bytes)\n%s\n", sent, full_message);
                 } else {
                     printf("Invalid command. Please type BATTLE_SETUP or quit.\n");
                 }
