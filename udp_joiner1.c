@@ -337,7 +337,7 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
         if(isSpectator){
             printf("Received message: %s",msg);
         }
-        printf("Receiving a message to spectator!\n");
+        printf("Invalid command or Spectator is receiving the message!\n");
     }
     printf("========================================\n");
 }

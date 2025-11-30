@@ -219,9 +219,9 @@ void sendMessageAuto(const char *msg,
                           (SOCKADDR*)&bc, sizeof(bc));
 
         if (sent == SOCKET_ERROR)
-            printf("[JOINER] Broadcast send failed: %d\n", WSAGetLastError());
+            printf("[HOST] Broadcast send failed: %d\n", WSAGetLastError());
         else
-            printf("[JOINER] Broadcast message sent.\n");
+            printf("[HOST] Broadcast message sent.\n");
 
         return;
     }
@@ -231,9 +231,9 @@ void sendMessageAuto(const char *msg,
                       (SOCKADDR*)hostAddr, hostLen);
 
     if (sent == SOCKET_ERROR)
-        printf("[JOINER] Unicast send failed: %d\n", WSAGetLastError());
+        printf("[HOST] Unicast send failed: %d\n", WSAGetLastError());
     else
-        printf("[JOINER] Unicast message sent.\n");
+        printf("[HOST] Unicast message sent.\n");
 }
 
 
@@ -393,7 +393,6 @@ int main(void) {
             // Allow host to send BATTLE_SETUP after handshake
             if (!strcmp(line, "BATTLE_SETUP") && is_handshake_done) {
                 // gather fields
-                printf("Current address %s: port: %d", inet_ntoa(last_peer.sin_addr), ntohs(last_peer.sin_port));
                 battle_setup_received = true;
                 printf("communication_mode (P2P/BROADCAST): ");
                 if (!fgets(my_setup.communicationMode, sizeof(my_setup.communicationMode), stdin)) continue;
