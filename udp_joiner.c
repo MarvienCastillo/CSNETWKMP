@@ -226,6 +226,7 @@ void processBattleSetup(char *receive,BattleSetupData *setup) {
     printf("[HOST] Parsed BATTLE_SETUP: mode=%s, pokemon=%s, atk=%d, def=%d\n",
            setup->communicationMode, setup->pokemonName,
            setup->boosts.specialAttack, setup->boosts.specialDefense);
+    
 }
 
 int main() {

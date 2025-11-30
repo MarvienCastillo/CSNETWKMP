@@ -210,7 +210,7 @@ void sendMessageAuto(const char *msg,
         bc.sin_family = AF_INET;
         bc.sin_port = htons(9003);            // host listens on 9002
         bc.sin_addr.s_addr =  inet_addr("255.255.255.255");
-
+    
         int enable = 1;
         setsockopt(sock, SOL_SOCKET, SO_BROADCAST,
                    (char*)&enable, sizeof(enable));
@@ -350,6 +350,14 @@ int main(void) {
                     printf("[HOST] Received BATTLE_SETUP from %s:%d\n%s\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port), recvbuf);
                     // parse joiner's setup into peer_setup
                     processBattleSetup(recvbuf, &peer_setup);
+                    sprintf(recvbuf,
+                        "message_type: BATTLE_SETUP\n"
+                        "communication_mode: %s\n"
+                        "pokemon_name: %s\n"
+                        "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }\n",
+                        peer_setup, peer_setup.pokemonName,
+                        peer_setup.boosts.specialAttack, peer_setup.boosts.specialDefense);
+                    sendMessageAuto(recvbuf,&last_peer,last_peer_len,peer_setup,true);
                     is_battle_started = true;
                 }
                 else if (!strncmp(mt, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {

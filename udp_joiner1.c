@@ -258,6 +258,11 @@ void sendMessageAuto(const char *msg,
                      BattleSetupData setup, bool isBroadcast)
 {
     // BROADCAST MODE
+    if(isSpectator){
+        printf("========================================\n");
+        printf("Received message: %s\n",msg);
+        printf("========================================\n");
+    }
     if (!strcmp(setup.communicationMode, "BROADCAST") || !battle_setup_received || isBroadcast) {
         struct sockaddr_in bc;
         memset(&bc, 0, sizeof(bc));
@@ -268,7 +273,6 @@ void sendMessageAuto(const char *msg,
         int enable = 1;
         setsockopt(socket_network, SOL_SOCKET, SO_BROADCAST,
                    (char*)&enable, sizeof(enable));
-
         int sent = sendto(socket_network, msg, strlen(msg), 0,
                           (SOCKADDR*)&bc, sizeof(bc));
 
@@ -305,8 +309,7 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
         printf("[JOINER] Received seed: %d\n", seed);
         
     }
-    else if(!strncmp(type, "SPECTATOR_RESPONSE", strlen("SPECTATOR_RESPONSE"))) {
-        isSpectator = true;
+    else if(!strncmp(type, "SPECTATOR_RESPONSE", strlen("SPECTATOR_RESPONSE")) && isSpectator) {
         printf("[JOINER] Registered as spectator with host %s:%d\n",
                inet_ntoa(from_addr->sin_addr), ntohs(from_addr->sin_port));
     }
@@ -315,12 +318,18 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
         BattleSetupData host_setup;
         processBattleSetup(msg, &host_setup);
         printf("[JOINER] Received BATTLE_SETUP from host.\n");
-        printf("  communication_mode: %s\n", host_setup.communicationMode);
+    
     }
 
     // CHAT_MESSAGE
     else if (!strncmp(type, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
         processChatMessage(msg);
+    }
+    else{
+        if(isSpectator){
+            printf("Received message: %s",msg);
+        }
+        printf("Receiving a message to spectator!\n");
     }
     printf("========================================\n");
 }
@@ -528,7 +537,7 @@ int main() {
                     printf("[JOINER] HANDSHAKE_REQUEST sent.\n");
                 } else if(!strcmp(input, "SPECTATOR_REQUEST")) {
                     is_handshake_done = true;
-                
+                    isSpectator = true;
                     sprintf(outbuf, "message_type: SPECTATOR_REQUEST\n");
 
                     sendMessageAuto(outbuf, &spectator, sizeof(spectator), setup,false);
