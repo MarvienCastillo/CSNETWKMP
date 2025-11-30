@@ -135,7 +135,7 @@ void saveSticker(const char *b64, const char *sender) {
     fwrite(data, 1, out_len, fp);
     fclose(fp);
     free(data);
-    printf("[HOST] Sticker saved as %s (from %s)\n", filename, sender ? sender : "unknown");
+    vprint("[VERBOSE] Sticker saved from %s, bytes=%zu\n", sender, out_len);
 }
 
 /* ---------------- helpers ---------------- */
@@ -364,13 +364,13 @@ int main(void) {
                     // chat arrived from joiner (unicast or broadcast depending on joiner)
                     processChatMessage(recvbuf);
                 }
-                else if (!strncmp(mt, "VERBOSE_ON", strlen("VERBOSE_ON"))) {
+                else if (!strcmp(mt, "VERBOSE_ON")) {
                     VERBOSE_MODE = true;
-                    printf("[SYSTEM] Verbose enabled.\n");
+                    printf("\n[SYSTEM] Verbose mode enabled.\n");
                 }
-                else if (!strncmp(mt, "VERBOSE_OFF", strlen("VERBOSE_OFF"))) {
+                else if (!strcmp(mt, "VERBOSE_OFF")) {
                     VERBOSE_MODE = false;
-                    printf("[SYSTEM] Verbose disabled.\n");
+                    printf("\n[SYSTEM] Verbose mode disabled.\n");
                 }
                 else {
                     // other messages
@@ -435,7 +435,7 @@ int main(void) {
 
             // CHAT_MESSAGE (host sending)
             if (!strcmp(line, "CHAT_MESSAGE")) {
-                char sender[64];
+                char sender[64] = "Player 1";
                 char content_type[16];
 
                 printf("sender_name: ");
@@ -502,12 +502,24 @@ int main(void) {
 
             if (!strcmp(line, "VERBOSE_ON")) {
                 VERBOSE_MODE = true;
-                printf("[SYSTEM] Verbose ON\n");
+                printf("\n[SYSTEM] Verbose mode enabled.\n");
+
+                // Send to joiner
+                sprintf(fullmsg, "message_type: VERBOSE_ON\n");
+                int sent = sendto(sock, fullmsg, strlen(fullmsg), 0,
+                                (SOCKADDR*)&last_peer, from_len);
+                vprint("\n[VERBOSE] Sent verbose ONN message to joiner (%d bytes)\n%s\n", sent, fullmsg);
                 continue;
             }
             if (!strcmp(line, "VERBOSE_OFF")) {
                 VERBOSE_MODE = false;
-                printf("[SYSTEM] Verbose OFF\n");
+                printf("\n[SYSTEM] Verbose mode disabled.\n");
+
+                // Send to joiner
+                sprintf(fullmsg, "message_type: VERBOSE_OFF\n");
+                int sent = sendto(sock, fullmsg, strlen(fullmsg), 0,
+                                (SOCKADDR*)&last_peer, from_len);
+                vprint("\n[VERBOSE] Sent verbose OFF message to joiner (%d bytes)\n%s\n", sent, fullmsg);
                 continue;
             }
 

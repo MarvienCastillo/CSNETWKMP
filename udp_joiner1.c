@@ -325,6 +325,14 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
     else if (!strncmp(type, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
         processChatMessage(msg);
     }
+    else if(!strcmp(type,"VERBOSE_ON")){
+        VERBOSE_MODE = true;
+        printf("\n[SYSTEM] Verbose mode enabled\n");
+    }
+    else if(!strcmp(type,"VERBOSE_OFF")){
+        VERBOSE_MODE = false;
+        printf("\n[SYSTEM] Verbose mode disabled\n");
+    }
     else{
         if(isSpectator){
             printf("Received message: %s",msg);
@@ -511,8 +519,6 @@ int main() {
 
             if (rec > 0) {
                 clean_newline(receive);
-                printf("[JOINER] Received message from %s:%d -> %s\n ",
-                       inet_ntoa(from.sin_addr), ntohs(from.sin_port), receive);
                 processReceivedMessage(receive, &broadcast_recv_addr, fromLen);
             }
         }
@@ -571,12 +577,22 @@ int main() {
 
                 else if (!strcmp(input, "VERBOSE_ON")) {
                     VERBOSE_MODE = true;
-                    printf("[SYSTEM] Verbose ON.\n");
+                    printf("\n[SYSTEM] Verbose mode enabled.\n");
+
+                    // Send to joiner
+                    sprintf(outbuf, "message_type: VERBOSE_ON\n");
+                    sendMessageAuto(outbuf,&hostAddr,sizeof(hostAddr),setup,true);
+                    vprint("\n[VERBOSE] Sent verbose ON message to joiner %s\n", outbuf);
                 }
 
                 else if (!strcmp(input, "VERBOSE_OFF")) {
                     VERBOSE_MODE = false;
-                    printf("[SYSTEM] Verbose OFF.\n");
+                    printf("\n[SYSTEM] Verbose mode disabled.\n");
+
+                    // Send to joiner
+                    sprintf(outbuf, "message_type: VERBOSE_OFF\n");
+                    sendMessageAuto(outbuf,&hostAddr,sizeof(hostAddr),setup,true);
+                    vprint("\n[VERBOSE] Sent verbose OFF message to joiner%s\n", outbuf);
                 }
 
                 else {
