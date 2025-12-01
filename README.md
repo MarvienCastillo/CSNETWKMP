@@ -5,6 +5,19 @@ This project implements a multiplayer Pokémon-style battle system using UDP net
 
 The system includes Pokémon data parsing, battle sequencing, core network logic, a reliability layer with ACKs and retransmission, and extended features such as chat and sticker messaging.
 
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+How to compile the code:
+  gcc <filename> BattleManager.c -o host.exe -lws2_32
+  gcc <filename> BattleManager.c -o joiner.exe -lws2_32
+**Note: Change the filename to the main file which is in this case udp_host.c and udp_joiner.c**
+To run the code, please run it in this order:
+1. Host
+2. Joiner
+
+**Important Note: If you are playing the game, kindly send BATTLE_SETUP from joiner first before sending from HOST to detect the pokemon**
+
+
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 PROJECT STRUCTURE
