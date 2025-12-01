@@ -8,26 +8,34 @@ The system includes Pokémon data parsing, battle sequencing, core network logic
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 PROJECT STRUCTURE
-  battle_setup.c          # Pokémon data loading & setup utilities
+
+1. battle_setup.c:         # Pokémon data loading & setup utilities
   
-battle_setup.h
-BattleManager.c         # Turn-based battle flow, damage handling, win/loss logic
-BattleManager.h
-pokemon_data.h          # Pokémon structs and constants
-pokemon.csv             # Pokémon stats database
+2. battle_setup.h
+   
+3. BattleManager.c         # Turn-based battle flow, damage handling, win/loss logic
 
-udp_host.c              # Host UDP logic
-udp_host1.c             # Alternate UDP host implementation
-udp_joiner.c            # Joiner UDP logic
-udp_joiner1.c           # Alternate UDP joiner implementation
+4. BattleManager.h
 
-joiner.exe              # Precompiled Windows client
-host.exe                # Precompiled Windows host
+5. pokemon_data.h          # Pokémon structs and constants
 
-pikachu.png             # Image asset
-compileAndrunTutorial.txt
-│
-.vscode/                # VSCode task and settings configuration
+6. pokemon.csv             # Pokémon stats database
+
+7. udp_host.c              # Host UDP logic
+
+8. udp_host1.c             # Alternate UDP host implementation
+
+9. udp_joiner.c            # Joiner UDP logic
+10. udp_joiner1.c           # Alternate UDP joiner implementation
+
+11. joiner.exe              # Precompiled Windows client
+12. host.exe                # Precompiled Windows host
+
+13. pikachu.png             # Image asset
+
+14. compileAndrunTutorial.txt
+
+15. .vscode/                # VSCode task and settings configuration
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
