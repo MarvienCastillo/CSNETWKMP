@@ -15,6 +15,11 @@ gcc udp_host.c BattleManager.c -o host.exe -lws2_32
 ```
   gcc udp_joiner.c BattleManager.c -o joiner.exe -lws2_32 
 ```
+
+Just in case, this is our github link: 
+```
+https://github.com/MarvienCastillo/CSNETWKMP.git
+```
 **Note: Change the filename to the main file which is in this case udp_host.c and udp_joiner.c** <br>
 To run the code, please run it in this order: <br>
 1. Host

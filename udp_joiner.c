@@ -1,4 +1,5 @@
-// joiner.c
+// joiner.c - FULL VERSION (Broadcast mode with Option B1)
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,478 +8,795 @@
 #include <stdbool.h>
 #include <windows.h>
 #include <stdint.h>
+#include <stdarg.h>
+#include <conio.h>
+#include "BattleManager.h"
+
 
 #pragma comment(lib, "Ws2_32.lib")
 
 #define MaxBufferSize 1024
-
+#define MAX_SPECTATORS 10 
 typedef struct {
-    int specialAttack;
-    int specialDefense;
+  int specialAttack;
+  int specialDefense;
 } StatBoosts;
 
 typedef struct {
-    char communicationMode[32]; // P2P or BROADCAST
-    char pokemonName[64];
-    StatBoosts boosts;
+  char communicationMode[32]; // P2P or BROADCAST
+  char pokemonName[64];
+  StatBoosts boosts;
 } BattleSetupData;
 
+// FIX 1: Change hostAddr to a pointer in the function prototype
+void sendMessageAuto(const char *msg,
+          struct sockaddr_in *hostAddr,
+          int hostLen,
+          BattleSetupData setup,
+          bool isBroadcast);
+
+BattleManager bm;
+bool battle_manager_initialized = false;
+// Game state flags
 bool is_handshake_done = false;
 bool is_battle_started = false;
 bool is_game_over = false;
 bool VERBOSE_MODE = false;
 
+
+
+SOCKET socket_network = INVALID_SOCKET;  // unicast
+
+struct sockaddr_in broadcast_recv_addr;
+
+
+
+
+// Global variables
+int seed = 0;
+// Add this near your existing global variables or inside main() for better scope
+struct sockaddr_in spectator_list[MAX_SPECTATORS];
+int spectator_count = 0;
+bool isSpectator = false;
+struct sockaddr_in hostAddr, from;
+int fromLen = sizeof(from);
+bool battle_setup_received = false;
+// ----------------------------------------------------
+// Verbose printing helper
+// ----------------------------------------------------
 void vprint(const char *fmt, ...) {
-    if (!VERBOSE_MODE) return;
-    va_list args;
-    va_start(args, fmt);
-    vprintf(fmt, args);
-    va_end(args);
+  if (!VERBOSE_MODE) return;
+  va_list args;
+  va_start(args, fmt);
+  vprintf(fmt, args);
+  va_end(args);
 }
 
-// Base64 encode/decode — minimal portable implementation
+// ----------------------------------------------------
+// Base64 encoder/decoder for stickers
+// ----------------------------------------------------
 static const char b64_table[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 char *base64_encode(const unsigned char *src, size_t len) {
-    char *out, *pos;
-    const unsigned char *end, *in;
-    size_t olen = 4*((len+2)/3);
-    out = malloc(olen+1);
-    if (!out) return NULL;
-    pos = out;
-    end = src + len;
-    in = src;
+  char *out, *pos;
+  const unsigned char *end, *in;
+  size_t olen = 4*((len+2)/3);
+  out = malloc(olen+1);
 
-    while (end - in >= 3) {
-        *pos++ = b64_table[in[0] >> 2];
-        *pos++ = b64_table[((in[0] & 0x03) << 4) | (in[1] >> 4)];
-        *pos++ = b64_table[((in[1] & 0x0f) << 2) | (in[2] >> 6)];
-        *pos++ = b64_table[in[2] & 0x3f];
-        in += 3;
+  if (!out) return NULL;
+  pos = out;
+  end = src + len;
+  in = src;
+
+  while (end - in >= 3) {
+    *pos++ = b64_table[in[0] >> 2];
+    *pos++ = b64_table[((in[0] & 0x03) << 4) | (in[1] >> 4)];
+    *pos++ = b64_table[((in[1] & 0x0f) << 2) | (in[2] >> 6)];
+    *pos++ = b64_table[in[2] & 0x3f];
+    in += 3;
+  }
+
+  if (end - in) {
+    *pos++ = b64_table[in[0] >> 2];
+    if (end - in == 1) {
+      *pos++ = b64_table[(in[0] & 0x03) << 4];
+      *pos++ = '=';
+    } else {
+      *pos++ = b64_table[((in[0] & 0x03) << 4) | (in[1] >> 4)];
+      *pos++ = b64_table[(in[1] & 0x0f) << 2];
     }
+    *pos++ = '=';
+  }
 
-    if (end - in) {
-        *pos++ = b64_table[in[0] >> 2];
-        if (end - in == 1) {
-            *pos++ = b64_table[(in[0] & 0x03) << 4];
-            *pos++ = '=';
-        } else {
-            *pos++ = b64_table[((in[0] & 0x03) << 4) | (in[1] >> 4)];
-            *pos++ = b64_table[(in[1] & 0x0f) << 2];
-        }
-        *pos++ = '=';
-    }
-
-    *pos = '\0';
-    return out;
+  *pos = '\0';
+  return out;
 }
 
 unsigned char *base64_decode(const char *src, size_t *out_len) {
-    int table[256];
-    int i;
+  int table[256];
+  for (int i = 0; i < 256; i++) table[i] = -1;
+  for (int i = 0; i < 64; i++) table[(unsigned char)b64_table[i]] = i;
 
-    for (i = 0; i < 256; i++) 
-        table[i] = -1;
-    for (i = 0; i < 64; i++) 
-        table[(unsigned char)b64_table[i]] = i;
+  size_t len = strlen(src);
+  unsigned char *out = malloc(len);
 
-    size_t len = strlen(src);
-    unsigned char *out = malloc(len);
-    if (!out) return NULL;
+  int val = 0, valb = -8;
+  size_t pos = 0;
 
-    int val = 0, valb = -8;
-    size_t pos = 0;
+  for (size_t i = 0; i < len; i++) {
+    unsigned char c = src[i];
 
-    for (size_t i = 0; i < len; i++) {
-        unsigned char c = src[i];
-        if (c == '=' || c > 127) continue;
-        if (table[c] == 0 && c != 'A')
-            continue;
-        val = (val << 6) + table[c];
-        valb += 6;
-        if (valb >= 0) {
-            out[pos++] = (val >> valb) & 0xFF;
-            valb -= 8;
-        }
+    if (c == '=' || table[c] < 0) continue;
+    val = (val << 6) + table[c];
+    valb += 6;
+
+    if (valb >= 0) {
+      out[pos++] = (val >> valb) & 0xFF;
+      valb -= 8;
     }
-    *out_len = pos;
-    return out;
+  }
+
+  *out_len = pos;
+  return out;
 }
 
 void saveSticker(const char *b64, const char *sender) {
     size_t out_len;
     unsigned char *data = base64_decode(b64, &out_len);
+
     if (!data) {
-        printf("[ERROR] Failed to decode Base64 sticker.\n");
+        printf("[ERROR] Base64 decode failed.\n");
         return;
     }
 
-    char filename[256];
+    char filename[128];
     sprintf(filename, "%s_sticker.png", sender);
 
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
-        printf("[ERROR] Cannot save sticker.\n");
+        printf("[ERROR] Could not save sticker.\n");
+            free(data);
         return;
     }
 
     fwrite(data, 1, out_len, fp);
     fclose(fp);
+    free(data);
 
-    printf("[STICKER] Sticker received from %s → saved as %s\n", sender, filename);
-    
-    vprint("[VERBOSE] Sticker saved from %s, bytes=%zu\n", sender, out_len);
+  printf("[STICKER] Received sticker from %s → %s\n", sender, filename);
 }
 
-/*
-    message - incoming message string
-    This function extracts and returns the message type from the given message string.
-*/
-char *get_message_type(char *message) {
-    char *msg = strstr(message, "message_type: ");
-    if (msg) return msg + 14;
-    return NULL;
+// ----------------------------------------------------
+// Helper functions
+// ----------------------------------------------------
+
+char *get_message_type(char *msg) {
+  char *p = strstr(msg, "message_type: ");
+  if (!p) return NULL;
+  return p + 14;
 }
 
+// ----------------------------------------------------
+// CHAT MESSAGE processor
+// ----------------------------------------------------
 void processChatMessage(char *msg) {
-    char sender[64], type[16];
+  char sender[64], type[16];
 
-    char *p_sender = strstr(msg, "sender_name: ");
-    char *p_type   = strstr(msg, "content_type: ");
-    if (!p_sender || !p_type) return;
+  char *p_sender = strstr(msg, "sender_name: ");
+  char *p_type  = strstr(msg, "content_type: ");
 
-    sscanf(p_sender, "sender_name: %63[^\n]", sender);
-    sscanf(p_type, "content_type: %15[^\n]", type);
+  if (!p_sender || !p_type) return;
 
-    if (!strcmp(type, "TEXT")) {
-        char *p_text = strstr(msg, "message_text: ");
-        if (!p_text) return;
+  sscanf(p_sender, "sender_name: %63[^\n]", sender);
+  sscanf(p_type, "content_type: %15[^\n]", type);
 
-        char text[512];
-        sscanf(p_text, "message_text: %511[^\n]", text);
-        printf("[CHAT] %s: %s\n", sender, text);
+  if (!strcmp(type, "TEXT")) {
+    char text[512];
+    char *p_text = strstr(msg, "message_text: ");
 
-    } else if (!strcmp(type, "STICKER")) {
-        char *p_data = strstr(msg, "sticker_data: ");
-        if (!p_data) return;
+    if (!p_text) return;
 
-        char *b64 = p_data + strlen("sticker_data: ");
-        saveSticker(b64, sender);
+    sscanf(p_text, "message_text: %511[^\n]", text);
+    printf("[CHAT] %s: %s\n", sender, text);
+
+  } else if (!strcmp(type, "STICKER")) {
+    char *p_data = strstr(msg, "sticker_data: ");
+    if (!p_data) return;
+
+    saveSticker(p_data + strlen("sticker_data: "), sender);
+  }
+}
+void processBattleMessage(const char *msg, BattleSetupData *setup, struct sockaddr_in peer, int peer_len) {
+  if (!battle_manager_initialized || !msg) return;
+
+  char *mt = strstr(msg, "message_type: ");
+  if (!mt) return;
+  mt += strlen("message_type: ");
+
+  // Only process battle-related messages
+  if (!strncmp(mt, "ATTACK_ANNOUNCE", 15) ||
+    !strncmp(mt, "DEFENSE_ANNOUNCE", 16) ||
+    !strncmp(mt, "CALCULATION_REPORT", 18) ||
+    !strncmp(mt, "CALCULATION_CONFIRM", 19) ||
+    !strncmp(mt, "RESOLUTION_REQUEST", 18) ||
+    !strncmp(mt, "GAME_OVER", 9))
+  {
+    BattleManager_HandleIncoming(&bm, msg);
+
+    const char *out = BattleManager_GetOutgoingMessage(&bm);
+    if (out && strlen(out) > 0 && setup && &peer) {
+      // FIX 3: Pass address of peer
+      sendMessageAuto(out, &peer, peer_len, *setup, false);
+      BattleManager_ClearOutgoingMessage(&bm);
     }
+  }
 }
 
-/*
-    str - string to clean
-    This function removes trailing newline and carriage return characters from the string.
-*/
-void clean_newline(char *str) {
-    size_t len = strlen(str);
-    while (len > 0 && (str[len - 1] == '\n' || str[len - 1] == '\r')) {
-        str[len - 1] = '\0';
-        len = strlen(str);
-    }
+// ----------------------------------------------------
+// BATTLE SETUP Input + Processing
+// ----------------------------------------------------
+void getInputBattleSetup(BattleSetupData *s) {
+  printf("communication_mode (P2P/BROADCAST): ");
+  fgets(s->communicationMode, sizeof(s->communicationMode), stdin);
+  clean_newline(s->communicationMode);
+
+  printf("pokemon_name: ");
+  fgets(s->pokemonName, sizeof(s->pokemonName), stdin);
+  clean_newline(s->pokemonName);
+
+  char buf[256];
+  printf("stat_boosts ({\"special_attack_uses\": 4, \"special_defense_uses\": 3}): ");
+  fgets(buf, sizeof(buf), stdin);
+  clean_newline(buf);
+
+  char *atk = strstr(buf, "\"special_attack_uses\": ");
+  char *def = strstr(buf, "\"special_defense_uses\": ");
+
+  if (!atk || !def) {
+    printf("Invalid format.\n");
+    return;
+  }
+
+  sscanf(atk, "\"special_attack_uses\": %d", &s->boosts.specialAttack);
+  sscanf(def, "\"special_defense_uses\": %d", &s->boosts.specialDefense);
 }
 
-/*
-    setup - pointer to BattleSetupData to fill
-    This function prompts the user for battle setup details and fills the provided structure.
-*/
-void getInputBattleSetup(BattleSetupData* setup) {
-    printf("communication_mode (P2P/BROADCAST): ");
-    if (fgets(setup->communicationMode, sizeof(setup->communicationMode), stdin) == NULL) return;
-    clean_newline(setup->communicationMode);
-
-    printf("pokemon_name: ");
-    if (fgets(setup->pokemonName, sizeof(setup->pokemonName), stdin) == NULL) return;
-    clean_newline(setup->pokemonName);
-
-    char stats_boosts[MaxBufferSize];
-    printf("stat_boosts (e.g., {\"special_attack_uses\": 3, \"special_defense_uses\": 2}): ");
-    if (fgets(stats_boosts, MaxBufferSize, stdin) == NULL) return;
-    clean_newline(stats_boosts);
-
-    char *atk = strstr(stats_boosts, "\"special_attack_uses\": ");
-    char *def = strstr(stats_boosts, "\"special_defense_uses\": ");
-    if (!atk || !def) {
-        printf("Invalid stat format. Use keys: \"special_attack_uses\" and \"special_defense_uses\"\n");
-        return;
-    }
-    sscanf(atk, "\"special_attack_uses\": %d", &setup->boosts.specialAttack);
-    sscanf(def, "\"special_defense_uses\": %d", &setup->boosts.specialDefense);
+void processBattleSetup(char *msg, BattleSetupData *s) {
+  
+  sscanf(strstr(msg, "communication_mode:"), "communication_mode: %31[^\n]",
+     s->communicationMode);
+  sscanf(strstr(msg, "pokemon_name:"), "pokemon_name: %63[^\n]",
+     s->pokemonName);
+  sscanf(strstr(msg, "\"special_attack_uses\":"), "\"special_attack_uses\": %d",
+     &s->boosts.specialAttack);
+  sscanf(strstr(msg, "\"special_defense_uses\":"), "\"special_defense_uses\": %d",
+     &s->boosts.specialDefense);
+  printf("[HOST] Parsed BATTLE_SETUP: mode=%s, pokemon=%s, atk=%d, def=%d\n",
+      s->communicationMode, s->pokemonName, s->boosts.specialAttack, s->boosts.specialDefense);
 }
 
-/*
-    receive - incoming message string
-    setup - pointer to BattleSetupData to fill
-    This function processes the BATTLE_SETUP message from the other peer and fills the provided structure.
-*/
-void processBattleSetup(char *receive,BattleSetupData *setup) {
-    char *comm_mode_ptr = strstr(receive, "communication_mode: ");
-    char *pokemon_name_ptr = strstr(receive, "pokemon_name: ");
-    char *atk = strstr(receive,"\"special_attack_uses\": ");
-    char *def = strstr(receive, "\"special_defense_uses\": ");
+// ----------------------------------------------------
+// UNIFIED SEND FUNCTION
+// P2P = unicast to host
+// BROADCAST = send to 255.255.255.255
+// ----------------------------------------------------
+// FIX 1: Change hostAddr to a pointer in the function definition
+void sendMessageAuto(const char *msg,
+          struct sockaddr_in *hostAddr,
+          int hostLen,
+          BattleSetupData setup, bool isBroadcast)
+{
+  // BROADCAST MODE
+  if(isSpectator){
+    printf("========================================\n");
+    printf("Received message: %s\n",msg);
+    printf("========================================\n");
+  }
+  if (!strcmp(setup.communicationMode, "BROADCAST") || !battle_setup_received || isBroadcast) {
+    struct sockaddr_in bc;
+    memset(&bc, 0, sizeof(bc));
+    bc.sin_family = AF_INET;
+    bc.sin_port = htons(9002);      // host listens on 9002
+    bc.sin_addr.s_addr = inet_addr("255.255.255.255");
 
-    sscanf(comm_mode_ptr, "communication_mode: %31[^\n]", setup->communicationMode);
-    sscanf(pokemon_name_ptr, "pokemon_name: %63[^\n]", setup->pokemonName);
-    sscanf(atk, "\"special_attack_uses\": %d", &setup->boosts.specialAttack);
-    sscanf(def, "\"special_defense_uses\": %d", &setup->boosts.specialDefense);
-    printf("[HOST] Parsed BATTLE_SETUP: mode=%s, pokemon=%s, atk=%d, def=%d\n",
-           setup->communicationMode, setup->pokemonName,
-           setup->boosts.specialAttack, setup->boosts.specialDefense);
+    int enable = 1;
+    setsockopt(socket_network, SOL_SOCKET, SO_BROADCAST,
+         (char*)&enable, sizeof(enable));
+    int sent = sendto(socket_network, msg, strlen(msg), 0,
+             (SOCKADDR*)&bc, sizeof(bc));
+
+    if (sent == SOCKET_ERROR)
+      printf("[JOINER] Broadcast send failed: %d\n", WSAGetLastError());
+    else
+      printf("[JOINER] Broadcast message sent.\n");
+
+    return;
+  }
+
+  // UNICAST MODE
+  int sent = sendto(socket_network, msg, strlen(msg), 0,
+           // FIX 2: hostAddr is already a pointer, remove the &
+           (SOCKADDR*)hostAddr, hostLen);
+
+  if (sent == SOCKET_ERROR)
+    printf("[JOINER] Unicast send failed: %d\n", WSAGetLastError());
+  else
+    printf("[JOINER] Unicast message sent.\n");
+}
+void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_len, BattleSetupData *setup) {
+  char *type = get_message_type(msg);
+  if (!type) return;
+  printf("========================================\n");
+  // HANDSHAKE_RESPONSE
+  if (!strncmp(type, "HANDSHAKE_RESPONSE", strlen("HANDSHAKE_RESPONSE"))) {
+    char *seed_ptr = strstr(msg, "seed: ");
+    if (seed_ptr) {
+      sscanf(seed_ptr, "seed: %d", &seed);
+    }
+    is_handshake_done = true;
+    printf("[JOINER] Handshake completed with host %s:%d\n",
+       inet_ntoa(from_addr->sin_addr), ntohs(from_addr->sin_port));
+    printf("[JOINER] Received seed: %d\n", seed);
     
+  }
+  else if(!strncmp(type, "SPECTATOR_RESPONSE", strlen("SPECTATOR_RESPONSE")) && isSpectator) {
+    printf("[JOINER] Registered as spectator with host %s:%d\n",
+       inet_ntoa(from_addr->sin_addr), ntohs(from_addr->sin_port));
+  }
+  // BATTLE_SETUP
+  else if (!strncmp(type, "BATTLE_SETUP", strlen("BATTLE_SETUP"))) {
+    BattleSetupData host_setup;
+    processBattleSetup(msg, &host_setup);
+    printf("[JOINER] Received BATTLE_SETUP from host.\n");
+    
+    if(!battle_manager_initialized){
+    BattleManager_Init(&bm, 0, setup->pokemonName);
+
+    battle_manager_initialized = true;
+
+    // FIX 3: Pass address of broadcast_recv_addr (which holds peer address)
+    processBattleMessage(msg, setup, broadcast_recv_addr, fromLen);
+  }
+  }
+  // CHAT_MESSAGE
+  else if (!strncmp(type, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
+    processChatMessage(msg);
+  }
+  else if(!strcmp(type,"VERBOSE_ON")){
+    VERBOSE_MODE = true;
+    printf("\n[SYSTEM] Verbose mode enabled\n");
+  }
+  else if(!strcmp(type,"VERBOSE_OFF")){
+    VERBOSE_MODE = false;
+    printf("\n[SYSTEM] Verbose mode disabled\n");
+  }
+  else if (!strcmp(type,"ATTACK_ANNOUNCE")){
+    BattleManager_HandleIncoming(&bm,type);
+  }
+  else if (!strcmp(type,"DEFENSE_ANNOUNCE")){
+    BattleManager_HandleIncoming(&bm,type);
+  }
+  else if (!strcmp(type,"CALCULATION_REPORT")){
+    BattleManager_HandleIncoming(&bm,type);
+  }
+  else if (!strcmp(type,"CALCULATION_CONFIRM")){
+    BattleManager_HandleIncoming(&bm,type);
+  }
+  else if (!strcmp(type,"RESOLUTION_REQUEST")){
+    BattleManager_HandleIncoming(&bm,type);
+  }
+  else if (!strcmp(type,"GAME_OVER")){
+    BattleManager_HandleIncoming(&bm,type);
+    is_game_over = true;
+    printf("[JOINER] Game Over received.\n");
+  }
+  else{
+
+  }
+  printf("========================================\n");
 }
+
+void inputChatMessage(char *outbuf, BattleSetupData setup, struct sockaddr_in hostAddr, int hostLen) {
+  char sender[] = "Player 2";
+  char ctype[16];
+
+  printf("sender_name: %s\n", sender);
+  printf("content_type (TEXT/STICKER): ");
+  fgets(ctype, sizeof(ctype), stdin);
+  clean_newline(ctype);
+
+  // TEXT
+  if (!strcmp(ctype, "TEXT")) {
+
+    char text[512];
+    printf("message_text: ");
+    fgets(text, sizeof(text), stdin);
+    clean_newline(text);
+
+    static int seq = 1;
+
+    sprintf(outbuf,
+      "message_type: CHAT_MESSAGE\n"
+      "sender_name: %s\n"
+      "content_type: TEXT\n"
+      "message_text: %s\n"
+      "sequence_number: %d\n",
+      sender, text, seq++
+    );
+
+    // FIX 4: Pass address of hostAddr
+    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,true);
+    printf("[JOINER] Sent TEXT chat.\n");
+  }
+
+  // STICKER
+  else if (!strcmp(ctype, "STICKER")) {
+
+    char path[256];
+    printf("PNG path: ");
+    fgets(path, sizeof(path), stdin);
+    clean_newline(path);
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+      printf("[ERROR] Cannot open PNG.\n");
+      return;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long fsize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    unsigned char *raw = malloc(fsize);
+    fread(raw, 1, fsize, fp);
+    fclose(fp);
+
+    char *b64 = base64_encode(raw, fsize);
+    free(raw);
+
+    static int seq = 1;
+
+    sprintf(outbuf,
+      "message_type: CHAT_MESSAGE\n"
+      "sender_name: %s\n"
+      "content_type: STICKER\n"
+      "sticker_data: %s\n"
+      "sequence_number: %d\n",
+      sender, b64, seq++
+    );
+
+    free(b64);
+
+    // FIX 4: Pass address of hostAddr
+    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,true);
+    printf("[JOINER] Sent STICKER chat.\n");
+  }
+  else{
+    printf("[ERROR] Unknown content_type.\n");
+  }
+}
+
+// ----------------------------------------------------
+// MAIN
+// ----------------------------------------------------
 
 int main() {
-    WSADATA wsa;
-    SOCKET socket_network;
-    struct sockaddr_in server_address, from_host;
-    int serverSize = sizeof(server_address);
-    int from_len = sizeof(from_host);
+  WSADATA wsa;
+  BattleSetupData setup;
+  BattleSetupData host_setup;
+  int spectator_count = 0;
+  char receive[2048];
+  char input[MaxBufferSize];
+  char outbuf[2048];
 
-    BattleSetupData setup;
-    BattleSetupData host_setup;
+  
 
-    char receive[MaxBufferSize * 2];
-    char buffer[MaxBufferSize];
-    char full_message[MaxBufferSize * 2];
-    int seed = 0;
+  // Init winsock
+  if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
+    printf("WSAStartup failed.\n");
+    return 1;
+  }
 
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        printf("WSAStartup failed.\n");
-        return 1;
+  // UNICAST SOCKET
+  socket_network = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (socket_network == INVALID_SOCKET) {
+    printf("socket() failed.\n");
+    return 1;
+  }
+
+
+  // ------------------------------
+  // SETUP BROADCAST LISTENER SOCKET (Option B1)
+  // ------------------------------
+
+  // listening
+  memset(&broadcast_recv_addr, 0, sizeof(broadcast_recv_addr));
+  broadcast_recv_addr.sin_family = AF_INET;
+  broadcast_recv_addr.sin_addr.s_addr = INADDR_ANY;
+  broadcast_recv_addr.sin_port = htons(9003);
+  int from_len = sizeof(broadcast_recv_addr);
+  int optVal = 1; // Set to 1 to enable the option
+  int optLen = sizeof(optVal);
+
+  // Set the SO_REUSEADDR option
+  if (setsockopt(socket_network, SOL_SOCKET, SO_REUSEADDR, (char*)&optVal, optLen) == SOCKET_ERROR)
+  {
+    printf("[ERROR] setsockopt(SO_REUSEADDR) failed: %d\n", WSAGetLastError());
+    // Handle error, but proceed to bind attempt
+  }
+  if (bind(socket_network, (SOCKADDR*)&broadcast_recv_addr,
+      sizeof(broadcast_recv_addr)) == SOCKET_ERROR)
+  {
+    printf("[ERROR] Could not bind broadcast listener port: %d\n", WSAGetLastError());
+    return 1;
+  }
+  int len = sizeof(broadcast_recv_addr);
+  getsockname(socket_network, (SOCKADDR*)&broadcast_recv_addr, &len);
+  printf("[JOINER] Listening for broadcast on port %d.\n", ntohs(broadcast_recv_addr.sin_port));
+
+  // Host address
+  memset(&hostAddr, 0, sizeof(hostAddr));
+  hostAddr.sin_family = AF_INET;
+  hostAddr.sin_addr.s_addr = INADDR_ANY; // This needs to be set to the HOST's actual unicast address later
+  hostAddr.sin_port = htons(0);
+
+  // sending addr for spectator
+  struct sockaddr_in spectator;
+  memset(&spectator, 0, sizeof(spectator));
+  spectator.sin_family = AF_INET;
+  spectator.sin_addr.s_addr = inet_addr("255.255.255.255");
+  spectator.sin_port = htons(9002);
+  printf("Joiner ready. Type HANDSHAKE_REQUEST or SPECTATOR_REQUEST to start handshake.\n");
+  printf("Note that to continue messaging, press any key!\n");
+  while (!is_game_over) {
+
+    // SELECT setup
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(socket_network, &readfds);
+
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 100000;
+
+    int result = select(0, &readfds, NULL, NULL, &tv);
+
+    if (result == SOCKET_ERROR) {
+      printf("select() failed.\n");
+      break;
     }
 
-    socket_network = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (socket_network == INVALID_SOCKET) {
-        printf("socket() failed.\n");
-        WSACleanup();
-        return 1;
+
+    // BROADCAST RECEIVE
+    // The joiner needs to listen for the HANDSHAKE_RESPONSE (which might be unicast or broadcast)
+    // We use the bound socket for listening here.
+    if (FD_ISSET(socket_network, &readfds)) {
+      memset(receive, 0, sizeof(receive));
+      fromLen = sizeof(broadcast_recv_addr); // Reset fromLen for recvfrom
+      int rec = recvfrom(socket_network, receive, sizeof(receive)-1,
+               0, (SOCKADDR*)&broadcast_recv_addr, &fromLen);
+
+      if (rec > 0) {
+        clean_newline(receive);
+        // When we receive a message, the host's address is now in broadcast_recv_addr.
+        // We should store this address for subsequent unicast messages.
+        if (!is_handshake_done && strstr(receive, "HANDSHAKE_RESPONSE")) {
+          hostAddr = broadcast_recv_addr;
+          hostAddr.sin_port = htons(9002); // Assuming host listens on 9002
+        }
+        processReceivedMessage(receive, &broadcast_recv_addr, fromLen, &setup);
+      }
     }
 
-    // Bind joiner socket to any available port so it can receive host replies
-    struct sockaddr_in local_addr;
-    memset(&local_addr, 0, sizeof(local_addr));
-    local_addr.sin_family = AF_INET;
-    local_addr.sin_addr.s_addr = INADDR_ANY; // or inet_addr("127.0.0.1");
-    local_addr.sin_port = htons(0); // ephemeral
-
-    if (bind(socket_network, (SOCKADDR*)&local_addr, sizeof(local_addr)) == SOCKET_ERROR) {
-        printf("bind() failed with error %d\n", WSAGetLastError());
-        closesocket(socket_network);
-        WSACleanup();
-        return 1;
-    }
-
-    // Host address to send handshake to
-    memset(&server_address, 0, sizeof(server_address));
-    server_address.sin_family = AF_INET;
-    server_address.sin_port = htons(9002);
-    server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-    printf("Joiner ready. Type HANDSHAKE_REQUEST to start handshake (or SPECTATOR_REQUEST):\n");
+    // --------------------------
+    // USER INPUT SECTION
+    // --------------------------
     
-    while (!is_game_over) {
-        fd_set readfds;
-        struct timeval timeout;
-        FD_ZERO(&readfds);
-        FD_SET(socket_network, &readfds);
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 100000; // 100ms
+    if(_kbhit()) {
+      printf("\nmessage_type: ");
+      if(!isSpectator){
+        if (!fgets(input, sizeof(input), stdin)) continue;
+          clean_newline(input);
 
-        int activity = select(0, &readfds, NULL, NULL, &timeout);
-        if (activity == SOCKET_ERROR) {
-            printf("select() error\n");
-            break;
+        // HANDSHAKE_REQUEST
+        if (!strcmp(input, "HANDSHAKE_REQUEST")) {
+          isSpectator = false;
+          sprintf(outbuf, "message_type: HANDSHAKE_REQUEST\n");
+          // We send this as broadcast/unicast to the host, we assume hostAddr is configured for the send port.
+          // For the very first message, we must broadcast if the host's IP is unknown.
+          // FIX 4: Pass address of hostAddr, set isBroadcast=true for initial handshake
+          sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,true);
+
+          printf("[JOINER] HANDSHAKE_REQUEST sent.\n");
+        } else if(!strcmp(input, "SPECTATOR_REQUEST")) {
+          is_handshake_done = true;
+          isSpectator = true;
+          sprintf(outbuf, "message_type: SPECTATOR_REQUEST\n");
+
+          // FIX 4: Pass address of spectator struct
+          sendMessageAuto(outbuf, &spectator, sizeof(spectator), setup,true);
+
+          printf("[JOINER] SPECTATOR_REQUEST sent.\n");
         }
+        // BATTLE_SETUP
+        else if (!strcmp(input, "BATTLE_SETUP") && is_handshake_done) {
 
-        if (FD_ISSET(socket_network, &readfds)) {
-            memset(receive, 0, sizeof(receive));
-            from_len = sizeof(from_host);
-            int byte_received = recvfrom(socket_network, receive, sizeof(receive) - 1, 0,
-                                         (SOCKADDR*)&from_host, &from_len);
-            if (byte_received > 0) {
-                clean_newline(receive);
+          getInputBattleSetup(&setup);
+          sprintf(outbuf,
+            "message_type: BATTLE_SETUP\n"
+            "communication_mode: %s\n"
+            "pokemon_name: %s\n"
+            "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }\n",
+            setup.communicationMode,
+            setup.pokemonName,
+            setup.boosts.specialAttack,
+            setup.boosts.specialDefense
+          );
 
-                vprint("\n[VERBOSE] Received raw message from %s:%d\n%s\n",
-                inet_ntoa(from_host.sin_addr),
-                ntohs(from_host.sin_port),
-                receive);
+          // FIX 4: Pass address of hostAddr
+          sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,false);
+          battle_setup_received = true;
+          printf("[JOINER] Sent BATTLE_SETUP.\n");
+        }
+        else if (battle_manager_initialized && bm.ctx.isMyTurn &&
+            bm.ctx.currentState == STATE_WAITING_FOR_MOVE) {
 
-                char *msg = get_message_type(receive);
-                if (!msg) continue;
+          BattleManager_HandleUserInput(&bm, input);
 
-                if (!strncmp(msg, "HANDSHAKE_RESPONSE", strlen("HANDSHAKE_RESPONSE"))) {
-                    char *seed_ptr = strstr(receive, "seed:");
-                    if (seed_ptr) {
-                        sscanf(seed_ptr, "seed: %d", &seed);
+          const char *out = BattleManager_GetOutgoingMessage(&bm);
+          if (out && strlen(out) > 0) {
+            // FIX 4: Pass address of hostAddr
+            sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
+          }
+        }
+        
+        if (!strcmp(input, "ATTACK_ANNOUNCE")) {
+          if (!battle_manager_initialized) {
+              printf("[JOINER] BattleManager not initialized yet. Wait for BATTLE_SETUP from host.\n");
+          } else {
+              char moveName[128];
+              printf("Move name: ");
+              if (fgets(moveName, sizeof(moveName), stdin)) {
+                clean_newline(moveName);
+                if (strlen(moveName) == 0) {
+                    printf("[JOINER] No move entered. Skipping.\n");
+                } else {
+                    BattleManager_HandleUserInput(&bm, moveName);
+                    const char *out = BattleManager_GetOutgoingMessage(&bm);
+                    if (out && strlen(out) > 0) {
+                        sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
+                        BattleManager_ClearOutgoingMessage(&bm);
                     }
-                    is_handshake_done = true; // <--- important
-                    // remember host address for future messages
-                    // from_host already filled by recvfrom
-                    printf("\n[JOINER] HANDSHAKE_RESPONSE received from %s:%d (seed=%d)\n",
-                           inet_ntoa(from_host.sin_addr), ntohs(from_host.sin_port), seed);
-                } else if (!strncmp(msg, "BATTLE_SETUP", strlen("BATTLE_SETUP")) && is_handshake_done) {
-                    printf("\n[JOINER] BATTLE_SETUP received:\n%s\n", receive);
-                    processBattleSetup(receive, &host_setup);
-                    is_battle_started = true;
-                } else if (!strncmp(msg, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
-                    processChatMessage(receive);
-                    continue;
-                } else if (!strcmp(msg, "VERBOSE_ON")) {
-                    VERBOSE_MODE = true;
-                    printf("\n[SYSTEM] Verbose mode enabled.\n\n");
-                }
-                else if (!strcmp(msg, "VERBOSE_OFF")) {
-                    VERBOSE_MODE = false;
-                    printf("\n[SYSTEM] Verbose mode disabled.\n");
-                } else {
-                    // ignore other messages in this simple version
                 }
             }
+          }
+        }
+        // DEFENSE ANNOUNCE
+        else if (!strcmp(input, "DEFENSE_ANNOUNCE")) {
+            snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                    "message_type: DEFENSE_ANNOUNCE\n"
+                    "sequence_number: %d\n",
+                    ++bm.ctx.currentSequenceNum);
+            sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
         }
 
-        // Allow user to type commands
-        printf("\nmessage_type: ");
-        if (fgets(buffer, MaxBufferSize, stdin) != NULL) {
-            clean_newline(buffer);
-
-            if (!strncmp(buffer, "HANDSHAKE_REQUEST", strlen("HANDSHAKE_REQUEST"))) {
-                printf("[JOINER] Sending HANDSHAKE_REQUEST to host...\n");
-                sprintf(full_message, "message_type: HANDSHAKE_REQUEST\n");
-                int sent = sendto(socket_network, full_message, (int)strlen(full_message), 0,
-                                  (SOCKADDR*)&server_address, serverSize);
-                if (sent == SOCKET_ERROR) {
-                    printf("\n[JOINER] sendto() failed: %d\n", WSAGetLastError());
-                } else {
-                    printf("\n[JOINER] HANDSHAKE_REQUEST sent to %s:%d\n",
-                           inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));
-                    vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
-                }
-            } else if (!strncmp(buffer, "BATTLE_SETUP", strlen("BATTLE_SETUP")) && is_handshake_done) {
-                getInputBattleSetup(&setup);
-                // send BATTLE_SETUP to host (use server_address — host at 127.0.0.1:9002)
-                sprintf(full_message,
-                        "message_type: BATTLE_SETUP\n"
-                        "communication_mode: %s\n"
-                        "pokemon_name: %s\n"
-                        "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }\n",
-                        setup.communicationMode, setup.pokemonName,
-                        setup.boosts.specialAttack, setup.boosts.specialDefense);
-
-                int sent = sendto(socket_network, full_message, (int)strlen(full_message), 0,
-                                  (SOCKADDR*)&server_address, serverSize);
-                if (sent == SOCKET_ERROR) {
-                    printf("[JOINER] sendto() failed: %d\n", WSAGetLastError());
-                } else {
-                    printf("\n[JOINER] BATTLE_SETUP sent to host %s:%d\n",
-                           inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port));
-                    vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
-                    is_battle_started = true;
-                }
-            }  else if (!strcmp(buffer, "CHAT_MESSAGE")) {
-                char sender[64] = "Player 2"; //TODO: see if this can be changed based on number of joiners!
-                char content_type[16];
-
-                printf("sender_name: Player 2\n");
-
-                printf("Enter content_type (TEXT/STICKER): ");
-                if (!fgets(content_type, sizeof(content_type), stdin)) continue;
-                clean_newline(content_type);
-
-                if (strcmp(content_type, "TEXT") == 0) {
-                    char message_text[512];
-                    printf("Enter message_text: ");
-                    if (!fgets(message_text, sizeof(message_text), stdin)) continue;
-                    clean_newline(message_text);
-
-                    static int seq = 1;
-                    sprintf(full_message,
-                        "message_type: CHAT_MESSAGE\n"
-                        "sender_name: %s\n"
-                        "content_type: TEXT\n"
-                        "message_text: %s\n"
-                        "sequence_number: %d\n",
-                        sender, message_text, seq++);
-
-                    int sent = sendto(socket_network, full_message, strlen(full_message), 0,
-                        (SOCKADDR*)&server_address, serverSize);
-                    printf("\n[JOINER] Sent TEXT message.\n");
-
-                } else if (strcmp(content_type, "STICKER") == 0) {
-                    char path[256];
-                    printf("Path to PNG (320x320): ");
-                    if (!fgets(path, sizeof(path), stdin)) continue;
-                    clean_newline(path);
-
-                    FILE *fp = fopen(path, "rb");
-                    if (!fp) { printf("[ERROR] Cannot open file.\n"); continue; }
-
-                    fseek(fp, 0, SEEK_END);
-                    long fsize = ftell(fp);
-                    fseek(fp, 0, SEEK_SET);
-
-                    unsigned char *raw = malloc(fsize);
-                    if (!raw) { 
-                        fclose(fp); 
-                        continue; }
-                    fread(raw, 1, fsize, fp);
-                    fclose(fp);
-
-                    char *b64 = base64_encode(raw, fsize);
-                    free(raw);
-
-                    size_t needed = strlen(b64) + 512; // 512 bytes for headers and extra fields
-                    char *full_message = malloc(needed); 
-                    
-                    if (!full_message) { 
-                        printf("[ERROR] Failed to allocate memory for message.\n"); 
-                        free(b64); 
-                        continue; }
-
-                    static int seq = 1;
-                    sprintf(full_message,
-                        "message_type: CHAT_MESSAGE\n"
-                        "sender_name: %s\n"
-                        "content_type: STICKER\n"
-                        "sticker_data: %s\n"
-                        "sequence_number: %d\n",
-                        sender, b64, seq++);
-
-                    int sent = sendto(socket_network, full_message, strlen(full_message), 0,
-                        (SOCKADDR*)&server_address, serverSize);
-                    free(b64);
-
-                    printf("\n[JOINER] Sent STICKER message.\n");
-                } else {
-                    printf("[ERROR] Invalid content_type. Must be TEXT or STICKER.\n");
-                }
-            } else if (!strcmp(buffer, "VERBOSE_ON")) {
-                VERBOSE_MODE = true;
-                printf("\n[SYSTEM] Verbose mode enabled.\n");
-
-                // Send to joiner
-                sprintf(full_message, "message_type: VERBOSE_ON\n");
-                int sent = sendto(socket_network, full_message, strlen(full_message), 0,
-                                (SOCKADDR*)&server_address, from_len);
-                vprint("\n[VERBOSE] Sent verbose ON message to joiner (%d bytes)\n%s\n", sent, full_message);
-            }
-            else if (!strcmp(buffer, "VERBOSE_OFF")) {
-                VERBOSE_MODE = false;
-                printf("\n[SYSTEM] Verbose mode disabled.\n");
-
-                // Send to joiner
-                sprintf(full_message, "message_type: VERBOSE_OFF\n");
-                int sent = sendto(socket_network, full_message, strlen(full_message), 0,
-                                (SOCKADDR*)&server_address, from_len);
-                vprint("\n[VERBOSE] Sent verbose OFF message to joiner (%d bytes)\n%s\n", sent, full_message);
-            } else {
-                printf("Unknown or invalid command. Use HANDSHAKE_REQUEST or BATTLE_SETUP (after handshake).\n");
-            }
+        // CALCULATION REPORT
+        else if (!strcmp(input, "CALCULATION_REPORT")) {
+            snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                    "message_type: CALCULATION_REPORT\n"
+                    "attacker: %s\n"
+                    "move_used: %s\n"
+                    "damage_dealt: %d\n"
+                    "defender_hp_remaining: %d\n"
+                    "sequence_number: %d\n",
+                    bm.ctx.myPokemon.name,
+                    bm.ctx.lastMoveUsed,
+                    bm.ctx.lastDamage,
+                    bm.ctx.lastRemainingHP,
+                    ++bm.ctx.currentSequenceNum);
+            sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
         }
+
+        // CALCULATION CONFIRM
+        else if (!strcmp(input, "CALCULATION_CONFIRM")) {
+            snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                    "message_type: CALCULATION_CONFIRM\n"
+                    "sequence_number: %d\n",
+                    ++bm.ctx.currentSequenceNum);
+            sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
+        }
+
+        // RESOLUTION REQUEST
+        else if (!strcmp(input, "RESOLUTION_REQUEST")) {
+            snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                    "message_type: RESOLUTION_REQUEST\n"
+                    "attacker: %s\n"
+                    "move_used: %s\n"
+                    "damage_dealt: %d\n"
+                    "defender_hp_remaining: %d\n"
+                    "sequence_number: %d\n",
+                    bm.ctx.myPokemon.name,
+                    bm.ctx.lastMoveUsed,
+                    bm.ctx.lastDamage,
+                    bm.ctx.lastRemainingHP,
+                    ++bm.ctx.currentSequenceNum);
+            sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
+        }
+
+        // GAME OVER
+        else if (!strcmp(input, "GAME_OVER")) {
+            BattleManager_TriggerGameOver(&bm, bm.ctx.myPokemon.name, bm.ctx.oppPokemon.name);
+            const char *out = BattleManager_GetOutgoingMessage(&bm);
+            if (out && strlen(out) > 0) {
+                sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
+                BattleManager_ClearOutgoingMessage(&bm);
+            }
+            is_game_over = true;
+            printf("[JOINER] Game Over. Exiting...\n");
+        }
+
+
+        // CHAT_MESSAGE
+        else if (!strcmp(input, "CHAT_MESSAGE")) {
+          // FIX 4: Pass address of hostAddr is done inside the function now
+          inputChatMessage(outbuf, setup, hostAddr, sizeof(hostAddr));
+        }
+
+        else if (!strcmp(input, "VERBOSE_ON")) {
+          VERBOSE_MODE = true;
+          printf("\n[SYSTEM] Verbose mode enabled.\n");
+
+          // Send to joiner
+          sprintf(outbuf, "message_type: VERBOSE_ON\n");
+          // FIX 4: Pass address of hostAddr
+          sendMessageAuto(outbuf,&hostAddr,sizeof(hostAddr),setup,true);
+          vprint("\n[VERBOSE] Sent verbose ON message to joiner %s\n", outbuf);
+        }
+
+        else if (!strcmp(input, "VERBOSE_OFF")) {
+          VERBOSE_MODE = false;
+          printf("\n[SYSTEM] Verbose mode disabled.\n");
+
+          // Send to joiner
+          sprintf(outbuf, "message_type: VERBOSE_OFF\n");
+          // FIX 4: Pass address of hostAddr
+          sendMessageAuto(outbuf,&hostAddr,sizeof(hostAddr),setup,true);
+          vprint("\n[VERBOSE] Sent verbose OFF message to joiner%s\n", outbuf);
+        }
+
+        else {
+          printf("[JOINER] Sending command.\n");
+          // FIX 4: Pass address of hostAddr
+          sendMessageAuto(input, &hostAddr, sizeof(hostAddr), setup,true);
+        }
+      }
+      else{
+        if (!fgets(input, sizeof(input), stdin)) continue;
+          clean_newline(input);
+        
+        if(!strncmp(input,"CHAT_MESSAGE",strlen("CHAT_MESSAGE"))){
+          // FIX 4: Pass address of hostAddr is done inside the function now
+          inputChatMessage(outbuf, setup, hostAddr, sizeof(hostAddr));
+        }
+        else if(strncmp(input,"CHAT_MESSAGE",strlen("CHAT_MESSAGE")))
+        {
+          printf("[SPECTATOR] cannot access %s command.\n",input);
+        }
+        else{
+          printf("[SPECTATOR] Unknown command.\n");
+        }
+      }
     }
+  }
 
-    closesocket(socket_network);
-    WSACleanup();
-    return 0;
+  closesocket(socket_network);
+  closesocket(socket_network); // Note: Calling closesocket twice is redundant/harmless but odd.
+  WSACleanup();
+  return 0;
 }
