@@ -8,33 +8,34 @@ The system includes Pokémon data parsing, battle sequencing, core network logic
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 PROJECT STRUCTURE
-├── battle_setup.c          # Pokémon data loading & setup utilities
-├── battle_setup.h
-├── BattleManager.c         # Turn-based battle flow, damage handling, win/loss logic
-├── BattleManager.h
-├── pokemon_data.h          # Pokémon structs and constants
-├── pokemon.csv             # Pokémon stats database
+  battle_setup.c          # Pokémon data loading & setup utilities
+  
+battle_setup.h
+BattleManager.c         # Turn-based battle flow, damage handling, win/loss logic
+BattleManager.h
+pokemon_data.h          # Pokémon structs and constants
+pokemon.csv             # Pokémon stats database
+
+udp_host.c              # Host UDP logic
+udp_host1.c             # Alternate UDP host implementation
+udp_joiner.c            # Joiner UDP logic
+udp_joiner1.c           # Alternate UDP joiner implementation
+
+joiner.exe              # Precompiled Windows client
+host.exe                # Precompiled Windows host
+
+pikachu.png             # Image asset
+compileAndrunTutorial.txt
 │
-├── udp_host.c              # Host UDP logic
-├── udp_host1.c             # Alternate UDP host implementation
-├── udp_joiner.c            # Joiner UDP logic
-├── udp_joiner1.c           # Alternate UDP joiner implementation
-│
-├── joiner.exe              # Precompiled Windows client
-├── host.exe                # Precompiled Windows host
-│
-├── pikachu.png             # Image asset
-├── compileAndrunTutorial.txt
-│
-└── .vscode/                # VSCode task and settings configuration
+.vscode/                # VSCode task and settings configuration
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 Project Overview
-1. Pokémon Data Loading
+1. Pokémon Data Loading:
 battle_setup.c parses pokemon.csv and constructs Pokémon structures used throughout the battle.
 
-2. Battle Flow (BattleManager)
+2. Battle Flow (BattleManager):
 Handles:
   Turn order
   Attack/defense announcement steps
