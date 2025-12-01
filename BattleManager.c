@@ -267,7 +267,7 @@ void BattleManager_Init(BattleManager *bm, int isHost, const char *myPokeName) {
         
         if (loaded_count > 0) {
             pokemon_data_is_loaded = true;
-            printf("[GAME INIT] Pokémon data loaded successfully (%d records).\n", loaded_count);
+            printf("[GAME INIT] Pokemon data loaded successfully (%d records).\n", loaded_count);
         } else {
             printf("[GAME INIT] CRITICAL ERROR: Failed to load pokemon.csv. Exiting.\n");
             exit(1); // Stop the application if data is critical
