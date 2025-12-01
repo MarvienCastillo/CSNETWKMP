@@ -1,4 +1,5 @@
-// host.c
+// udp_host.c
+#define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,322 @@
 #include <stdint.h>
 
 #pragma comment(lib, "Ws2_32.lib")
+
+#define REL_MAX_OUTSTANDING 256
+#define REL_TIMEOUT_MS 500   // 500 milliseconds timeout
+#define REL_MAX_RETRIES 3
+
+typedef struct sockaddr_in SockAddrIn;
+
+typedef void (*rel_connection_failed_cb)(SockAddrIn *peer);
+
+// Initialize reliability with the bound UDP socket (socket already created and bound).
+// Returns 0 on success.
+int rel_init(SOCKET sock);
+
+// Shutdown reliability layer (stop worker thread, free resources)
+void rel_shutdown(void);
+
+// Send a reliable (sequenced) message to dest. The function copies payload so caller may free.
+// Returns 0 on success, -1 on failure (e.g., internal allocation error)
+int rel_send(SockAddrIn *dest, const char *payload, int payload_len);
+
+// Process an incoming raw UDP datagram. If it's a DATA message, this function will send ACK and
+// copy the application payload into out_buf (up to *out_len). Returns 1 if there is app data to deliver,
+// 0 if the datagram was an ACK or nothing to deliver, -1 on parse error.
+int rel_process_incoming(char *raw_buf, int raw_len, SockAddrIn *from, char *out_buf, int *out_len);
+
+// Set callback invoked when a peer exhausts retries (connection failure)
+void rel_set_connection_failed_callback(rel_connection_failed_cb cb);
+
+// Forcibly drop outstanding messages for a peer (optional)
+void rel_force_terminate_for_peer(SockAddrIn *peer);
+
+typedef struct {
+    SockAddrIn addr;
+    uint32_t seq;
+    char *data;          // owned buffer containing enveloped message (header + payload)
+    int data_len;
+    int retries;
+    unsigned long last_sent_ms;
+    bool in_use;
+} OutstandingMsg;
+
+static OutstandingMsg outstanding[REL_MAX_OUTSTANDING];
+static volatile LONG next_seq = 1;
+static CRITICAL_SECTION rel_cs;
+static SOCKET rel_sock = INVALID_SOCKET;
+static HANDLE rel_thread = NULL;
+static volatile bool rel_thread_run = false;
+static rel_connection_failed_cb on_conn_failed = NULL;
+
+// helper: Get tick in ms
+static unsigned long rel_now_ms() {
+    return GetTickCount();
+}
+
+static int sockaddr_equal(const SockAddrIn *a, const SockAddrIn *b) {
+    return (a->sin_addr.s_addr == b->sin_addr.s_addr) && (a->sin_port == b->sin_port);
+}
+
+// low level send
+static int rel_sendto(SockAddrIn *dest, const char *buf, int len) {
+    int sent = sendto(rel_sock, buf, len, 0, (const struct sockaddr*)dest, sizeof(SockAddrIn));
+    return (sent == SOCKET_ERROR) ? -1 : sent;
+}
+
+static int rel_enqueue_outstanding(SockAddrIn *dest, uint32_t seq, char *buf, int len) {
+    EnterCriticalSection(&rel_cs);
+    int idx = -1;
+    for (int i = 0; i < REL_MAX_OUTSTANDING; ++i) {
+        if (!outstanding[i].in_use) { idx = i; break; }
+    }
+    if (idx == -1) {
+        LeaveCriticalSection(&rel_cs);
+        return -1;
+    }
+    outstanding[idx].in_use = true;
+    outstanding[idx].addr = *dest;
+    outstanding[idx].seq = seq;
+    outstanding[idx].data = buf; // ownership
+    outstanding[idx].data_len = len;
+    outstanding[idx].retries = 0;
+    outstanding[idx].last_sent_ms = rel_now_ms();
+    LeaveCriticalSection(&rel_cs);
+    return 0;
+}
+
+static OutstandingMsg* rel_find_outstanding(SockAddrIn *from, uint32_t seq) {
+    for (int i = 0; i < REL_MAX_OUTSTANDING; ++i) {
+        if (outstanding[i].in_use && outstanding[i].seq == seq && sockaddr_equal(&outstanding[i].addr, from))
+            return &outstanding[i];
+    }
+    return NULL;
+}
+
+static void rel_remove_outstanding(OutstandingMsg *om) {
+    if (!om) return;
+    EnterCriticalSection(&rel_cs);
+    if (om->in_use) {
+        free(om->data);
+        om->data = NULL;
+        om->in_use = false;
+    }
+    LeaveCriticalSection(&rel_cs);
+}
+
+// worker thread: retransmit timed-out messages
+static DWORD WINAPI rel_thread_func(LPVOID param) {
+    (void)param;
+    while (rel_thread_run) {
+        unsigned long now = rel_now_ms();
+        EnterCriticalSection(&rel_cs);
+        for (int i = 0; i < REL_MAX_OUTSTANDING; ++i) {
+            if (!outstanding[i].in_use) continue;
+            OutstandingMsg *om = &outstanding[i];
+            if ((int)(now - om->last_sent_ms) >= REL_TIMEOUT_MS) {
+                if (om->retries >= REL_MAX_RETRIES) {
+                    // connection failed for this peer (invoke callback outside CS)
+                    SockAddrIn peer = om->addr;
+                    char dbgaddr[64];
+                    sprintf(dbgaddr, "%s:%u", inet_ntoa(peer.sin_addr), ntohs(peer.sin_port));
+                    printf("[RELIABILITY] peer %s retries exhausted for seq=%u\n", dbgaddr, (unsigned int)om->seq);
+                    free(om->data);
+                    om->data = NULL;
+                    om->in_use = false;
+                    LeaveCriticalSection(&rel_cs);
+                    if (on_conn_failed) on_conn_failed(&peer);
+                    EnterCriticalSection(&rel_cs);
+                    // restart loop since array might have changed
+                } else {
+                    // retransmit
+                    int sent = rel_sendto(&om->addr, om->data, om->data_len);
+                    om->retries++;
+                    om->last_sent_ms = rel_now_ms();
+                    printf("[RELIABILITY] retransmit seq=%u retry=%d sent=%d to %s:%u\n",
+                           (unsigned int)om->seq, om->retries, sent,
+                           inet_ntoa(om->addr.sin_addr), ntohs(om->addr.sin_port));
+                }
+            }
+        }
+        LeaveCriticalSection(&rel_cs);
+        Sleep(50);
+    }
+    return 0;
+}
+
+int rel_init(SOCKET sock) {
+    if (sock == INVALID_SOCKET) return -1;
+    rel_sock = sock;
+    InitializeCriticalSection(&rel_cs);
+    memset(outstanding, 0, sizeof(outstanding));
+    next_seq = 1;
+    rel_thread_run = true;
+    rel_thread = CreateThread(NULL, 0, rel_thread_func, NULL, 0, NULL);
+    if (!rel_thread) {
+        rel_thread_run = false;
+        DeleteCriticalSection(&rel_cs);
+        return -1;
+    }
+    return 0;
+}
+
+void rel_shutdown(void) {
+    rel_thread_run = false;
+    if (rel_thread) {
+        WaitForSingleObject(rel_thread, 2000);
+        CloseHandle(rel_thread);
+        rel_thread = NULL;
+    }
+    EnterCriticalSection(&rel_cs);
+    for (int i = 0; i < REL_MAX_OUTSTANDING; ++i) {
+        if (outstanding[i].in_use) {
+            free(outstanding[i].data);
+            outstanding[i].data = NULL;
+            outstanding[i].in_use = false;
+        }
+    }
+    LeaveCriticalSection(&rel_cs);
+    DeleteCriticalSection(&rel_cs);
+    rel_sock = INVALID_SOCKET;
+}
+
+void rel_set_connection_failed_callback(rel_connection_failed_cb cb) {
+    on_conn_failed = cb;
+}
+
+// Build envelope:
+// DATA:
+// "SEQ:<n>\nTYPE:DATA\n\n<payload bytes...>"
+// ACK:
+// "TYPE:ACK\nACK:<n>\n\n"
+int rel_send(SockAddrIn *dest, const char *payload, int payload_len) {
+    if (!dest || !payload || payload_len <= 0) return -1;
+    // build header
+    char header[128];
+    uint32_t seq = (uint32_t)InterlockedIncrement(&next_seq);
+    int header_len = snprintf(header, sizeof(header), "SEQ:%u\nTYPE:DATA\n\n", (unsigned int)seq);
+    int total_len = header_len + payload_len;
+    char *buf = (char*)malloc(total_len);
+    if (!buf) return -1;
+    memcpy(buf, header, header_len);
+    memcpy(buf + header_len, payload, payload_len);
+
+    // send immediately
+    int sent = rel_sendto(dest, buf, total_len);
+    if (sent < 0) {
+        free(buf);
+        return -1;
+    }
+
+    // enqueue for retransmit; buf ownership moved into queue
+    if (rel_enqueue_outstanding(dest, seq, buf, total_len) != 0) {
+        // queue full
+        free(buf);
+        return -1;
+    }
+    return 0;
+}
+
+static int rel_send_ack(SockAddrIn *dest, uint32_t seq_to_ack) {
+    char ackbuf[128];
+    int ack_len = snprintf(ackbuf, sizeof(ackbuf), "TYPE:ACK\nACK:%u\n\n", (unsigned int)seq_to_ack);
+    int sent = rel_sendto(dest, ackbuf, ack_len);
+    if (sent < 0) return -1;
+    return 0;
+}
+
+// Process incoming datagram. If ACK -> remove outstanding. If DATA -> send ack and copy payload.
+// out_buf/out_len: caller provides buffer and value pointed by out_len is buffer size; on return it is payload length.
+int rel_process_incoming(char *raw_buf, int raw_len, SockAddrIn *from, char *out_buf, int *out_len) {
+    if (!raw_buf || raw_len <= 0) return 0;
+    // find header end (\n\n)
+    int header_end = -1;
+    for (int i = 0; i < raw_len - 1; ++i) {
+        if (raw_buf[i] == '\n' && raw_buf[i+1] == '\n') { header_end = i + 2; break; }
+    }
+    if (header_end == -1) {
+        // no envelope found - treat as raw app payload
+        if (out_buf && out_len) {
+            int copy_len = (*out_len < raw_len) ? *out_len : raw_len;
+            memcpy(out_buf, raw_buf, copy_len);
+            *out_len = copy_len;
+            return 1;
+        }
+        return 0;
+    }
+    // parse header lines
+    char *hdr = (char*)malloc(header_end + 1);
+    memcpy(hdr, raw_buf, header_end);
+    hdr[header_end] = 0;
+    uint32_t seq_val = 0;
+    int is_ack = 0;
+    char *line = strtok(hdr, "\n");
+    while (line) {
+        if (_strnicmp(line, "TYPE:", 5) == 0) {
+            char *v = line + 5;
+            while (*v == ' ') v++;
+            if (_stricmp(v, "ACK") == 0) is_ack = 1;
+        } else if (_strnicmp(line, "ACK:", 4) == 0) {
+            seq_val = (uint32_t)atoi(line + 4);
+        } else if (_strnicmp(line, "SEQ:", 4) == 0) {
+            seq_val = (uint32_t)atoi(line + 4);
+        }
+        line = strtok(NULL, "\n");
+    }
+    free(hdr);
+
+    if (is_ack) {
+        // remove outstanding entry matching seq/from
+        EnterCriticalSection(&rel_cs);
+        OutstandingMsg *om = rel_find_outstanding(from, seq_val);
+        if (om) {
+            free(om->data);
+            om->data = NULL;
+            om->in_use = false;
+            printf("[RELIABILITY] received ACK for seq=%u from %s:%u\n",
+                   (unsigned int)seq_val, inet_ntoa(from->sin_addr), ntohs(from->sin_port));
+        }
+        LeaveCriticalSection(&rel_cs);
+        return 0;
+    } else {
+        // DATA message: send ACK and deliver payload
+        if (seq_val == 0) {
+            // malformed; deliver raw payload after header_end
+            int payload_len = raw_len - header_end;
+            if (out_buf && out_len) {
+                int copy_len = (payload_len > *out_len) ? *out_len : payload_len;
+                memcpy(out_buf, raw_buf + header_end, copy_len);
+                *out_len = copy_len;
+                return 1;
+            }
+            return 0;
+        }
+        // send ACK back (best-effort)
+        rel_send_ack(from, seq_val);
+
+        int payload_len = raw_len - header_end;
+        if (out_buf && out_len) {
+            int copy_len = (payload_len > *out_len) ? *out_len : payload_len;
+            memcpy(out_buf, raw_buf + header_end, copy_len);
+            *out_len = copy_len;
+            return 1;
+        }
+        return 0;
+    }
+}
+
+void rel_force_terminate_for_peer(SockAddrIn *peer) {
+    EnterCriticalSection(&rel_cs);
+    for (int i = 0; i < REL_MAX_OUTSTANDING; ++i) {
+        if (outstanding[i].in_use && sockaddr_equal(&outstanding[i].addr, peer)) {
+            free(outstanding[i].data);
+            outstanding[i].data = NULL;
+            outstanding[i].in_use = false;
+        }
+    }
+    LeaveCriticalSection(&rel_cs);
+}
 
 #define MaxBufferSize 1024
 
@@ -65,7 +382,7 @@ char *base64_encode(const unsigned char *src, size_t len) {
             *pos++ = '=';
         } else {
             *pos++ = b64_table[((in[0] & 0x03) << 4) | (in[1] >> 4)];
-            *pos++ = b64_table[(in[1] & 0x0f) << 2];
+            *pos++ = b64_table[((in[1] & 0x0f) << 2) | (in[2] >> 6)];
         }
         *pos++ = '=';
     }
@@ -127,7 +444,7 @@ void saveSticker(const char *b64, const char *sender) {
     fclose(fp);
     free(data);
 
-    printf("[STICKER] Sticker received from %s → saved as %s\n", sender, filename);
+    printf("[STICKER] Sticker received from %s \u2192 saved as %s\n", sender, filename);
     
     vprint("[VERBOSE] Sticker saved from %s, bytes=%zu\n", sender, out_len);
 }
@@ -188,16 +505,26 @@ void processBattleSetup(char *receive,BattleSetupData *setup) {
            setup->boosts.specialAttack, setup->boosts.specialDefense);
 }
 
+void on_conn_failed_handler(SockAddrIn *peer) {
+    char dbgaddr[64];
+    sprintf(dbgaddr, "%s:%u", inet_ntoa(peer->sin_addr), ntohs(peer->sin_port));
+    printf("\n[HOST] CRITICAL: Connection failed for peer %s - Retries exhausted.\n", dbgaddr);
+    // In a real application, you'd mark the peer as disconnected and handle cleanup.
+}
+
 int main() {
     WSADATA wsa;
     SOCKET socket_network;
-    struct sockaddr_in server_address, from_joiner;
+    SockAddrIn server_address, from_joiner;
     int from_len = sizeof(from_joiner);
 
     BattleSetupData setup;
     BattleSetupData joiner_setup;
 
-    char receive[MaxBufferSize * 2];
+    char raw_receive[MaxBufferSize * 2]; // For raw UDP packet
+    char app_payload[MaxBufferSize * 2]; // For application-level payload after reliability layer processing
+    int app_payload_len;
+
     char buffer[MaxBufferSize];
     char full_message[MaxBufferSize * 2];
     int seed = 0;
@@ -226,10 +553,21 @@ int main() {
         WSACleanup();
         return 1;
     }
-    // unicast sending address
+    
+    // Initialize reliability layer
+    if (rel_init(socket_network) != 0) {
+        printf("[HOST] Reliability layer initialization failed.\n");
+        closesocket(socket_network);
+        WSACleanup();
+        return 1;
+    }
+    rel_set_connection_failed_callback(on_conn_failed_handler);
+
+    // unicast sending address (will be populated on first incoming packet)
     memset(&server_address, 0, sizeof(server_address));
     server_address.sin_family = AF_INET;
-    server_address.sin_port = htons(9002); // joiner listens on 9002
+    // server_address.sin_port is set later on first packet, but is typically 9002 for joiner
+    server_address.sin_port = htons(9002); 
 
     printf("Host listening on 0.0.0.0:9002. Waiting for handshake request...\n");
 
@@ -249,68 +587,80 @@ int main() {
         }
 
         if (FD_ISSET(socket_network, &readfds)) {
-            memset(receive, 0, sizeof(receive));
+            memset(raw_receive, 0, sizeof(raw_receive));
             from_len = sizeof(from_joiner);
-            int byte_received = recvfrom(socket_network, receive, sizeof(receive) - 1, 0,
+            int byte_received = recvfrom(socket_network, raw_receive, sizeof(raw_receive) - 1, 0,
                                          (SOCKADDR*)&from_joiner, &from_len);
+            
             if(byte_received == SOCKET_ERROR) {
                 printf("recvfrom() failed: %d\n", WSAGetLastError());
                 continue;
             }
-            server_address.sin_addr = from_joiner.sin_addr;
-            server_address.sin_port = ntohs(from_joiner.sin_port);
-            printf("[HOST] Packet received from %s:%d\n",
+
+            printf("[HOST] Raw packet received from %s:%d\n",
                    inet_ntoa(from_joiner.sin_addr), ntohs(from_joiner.sin_port));
+            
+            // Update the joiner's address for sending reliable messages later
+            server_address.sin_addr = from_joiner.sin_addr;
+            server_address.sin_port = from_joiner.sin_port; // Note: from_joiner.sin_port is already in network byte order
+
             if (byte_received > 0) {
-                clean_newline(receive);
-
-                vprint("\n[VERBOSE] Received raw message from %s:%d\n%s\n",
-                        inet_ntoa(from_joiner.sin_addr),
-                        ntohs(from_joiner.sin_port),
-                        receive);
-
-                char *msg = get_message_type(receive);
-                if (!msg) continue;
-
-                if (!strncmp(msg, "HANDSHAKE_REQUEST", strlen("HANDSHAKE_REQUEST"))) {
-                    printf("[HOST] HANDSHAKE_REQUEST received from %s:%d\n",
-                           inet_ntoa(from_joiner.sin_addr), ntohs(from_joiner.sin_port));
-                    
-                    // send handshake response TO THE SENDER (from_joiner)
-                    seed = 12345;
-                    is_handshake_done = true;
-                    sprintf(full_message, "message_type: HANDSHAKE_RESPONSE\nseed: %d\n", seed);
-
-                    int sent = sendto(socket_network, full_message, (int)strlen(full_message), 0,
-                                      (SOCKADDR*)&server_address, sizeof(server_address));
+                // Process raw packet through reliability layer
+                app_payload_len = sizeof(app_payload);
+                int result = rel_process_incoming(raw_receive, byte_received, &from_joiner, app_payload, &app_payload_len);
                 
-                    if (sent == SOCKET_ERROR) {
-                        printf("[HOST] sendto() failed: %d\n", WSAGetLastError());
-                    } else {
-                        printf("[HOST] HANDSHAKE_RESPONSE sent to %s:%d (seed=%d). Handshake complete!\n",
-                               inet_ntoa(server_address.sin_addr), ntohs(server_address.sin_port), seed);
-                        vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
-                    }
-                } else if (!strncmp(msg, "BATTLE_SETUP", strlen("BATTLE_SETUP")) && is_handshake_done) {
-                    printf("[HOST] BATTLE_SETUP received from joiner:\n%s\n", receive);
+                if (result == 1) { // App data received
+                    app_payload[app_payload_len] = '\0';
+                    clean_newline(app_payload);
+
+                    vprint("\n[VERBOSE] Received app message from %s:%d (len=%d):\n%s\n",
+                           inet_ntoa(from_joiner.sin_addr),
+                           ntohs(from_joiner.sin_port),
+                           app_payload_len,
+                           app_payload);
+
+                    char *msg = get_message_type(app_payload);
+                    if (!msg) continue;
                     
-                    // (Optional) parse joiner's setup here into joiner_setup if desired
-                    processBattleSetup(receive, &joiner_setup);
-                    is_battle_started = true;
-                } else if (!strncmp(msg, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
-                    processChatMessage(receive);
-                    continue;
-                } else if (!strcmp(msg, "VERBOSE_ON")) {
-                    VERBOSE_MODE = true;
-                    printf("\n[SYSTEM] Verbose mode enabled.\n");
-                }
-                else if (!strcmp(msg, "VERBOSE_OFF")) {
-                    VERBOSE_MODE = false;
-                    printf("\n[SYSTEM] Verbose mode disabled.\n");
+                    if (!strncmp(msg, "HANDSHAKE_REQUEST", strlen("HANDSHAKE_REQUEST"))) {
+                        printf("[HOST] HANDSHAKE_REQUEST received from %s:%d\n",
+                               inet_ntoa(from_joiner.sin_addr), ntohs(from_joiner.sin_port));
+                        
+                        // send handshake response reliably
+                        seed = 12345;
+                        is_handshake_done = true;
+                        sprintf(full_message, "message_type: HANDSHAKE_RESPONSE\nseed: %d\n", seed);
+                        
+                        if (rel_send(&server_address, full_message, (int)strlen(full_message)) != 0) {
+                            printf("[HOST] rel_send(HANDSHAKE_RESPONSE) failed.\n");
+                        } else {
+                            printf("[HOST] HANDSHAKE_RESPONSE sent to %s:%d (seed=%d). Handshake complete! (Reliable send)\n",
+                                   inet_ntoa(from_joiner.sin_addr), ntohs(from_joiner.sin_port), seed);
+                            vprint("\n[VERBOSE] Sent message (Reliable):\n%s\n", full_message);
+                        }
+                    } else if (!strncmp(msg, "BATTLE_SETUP", strlen("BATTLE_SETUP")) && is_handshake_done) {
+                        printf("[HOST] BATTLE_SETUP received from joiner:\n%s\n", app_payload);
+                        
+                        processBattleSetup(app_payload, &joiner_setup);
+                        is_battle_started = true;
+                    } else if (!strncmp(msg, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
+                        processChatMessage(app_payload);
+                        continue;
+                    } else if (!strcmp(msg, "VERBOSE_ON")) {
+                        VERBOSE_MODE = true;
+                        printf("\n[SYSTEM] Verbose mode enabled.\n");
+                    }
+                    else if (!strcmp(msg, "VERBOSE_OFF")) {
+                        VERBOSE_MODE = false;
+                        printf("\n[SYSTEM] Verbose mode disabled.\n");
+                    } else {
+                        printf("[HOST] Received message from Joiner: %s\n", app_payload);
+                    }
+                } else if (result == 0) {
+                    // ACK or non-app-data packet handled by reliability layer
+                    // Do nothing here, reliability layer printed any useful info
                 } else {
-                    printf("[HOST] Received message from Joiner: %s\n", receive);
-                    // other messages ignored in this simple version
-                    //printf("[HOST] Received (ignored): %s\n", receive);
+                    printf("[HOST] Error processing incoming packet via reliability layer.\n");
                 }
             }
         }
@@ -344,7 +694,7 @@ int main() {
                     sscanf(atk, "\"special_attack_uses\": %d", &setup.boosts.specialAttack);
                     sscanf(def, "\"special_defense_uses\": %d", &setup.boosts.specialDefense);
 
-                    // Build and send BATTLE_SETUP to known joiner address (from_joiner)
+                    // Build and send BATTLE_SETUP reliably to known joiner address
                     sprintf(full_message,
                             "message_type: BATTLE_SETUP\n"
                             "communication_mode: %s\n"
@@ -353,17 +703,16 @@ int main() {
                             setup.communicationMode, setup.pokemonName,
                             setup.boosts.specialAttack, setup.boosts.specialDefense);
 
-                    int sent = sendto(socket_network, full_message, (int)strlen(full_message), 0,
-                                      (SOCKADDR*)&from_joiner, from_len);
-                    if (sent == SOCKET_ERROR) {
-                        printf("[HOST] sendto() failed: %d\n", WSAGetLastError());
+                    if (rel_send(&server_address, full_message, (int)strlen(full_message)) != 0) {
+                        printf("[HOST] rel_send(BATTLE_SETUP) failed.\n");
                     } else {
-                        printf("[HOST] BATTLE_SETUP sent to %s:%d\n", inet_ntoa(from_joiner.sin_addr), ntohs(from_joiner.sin_port));
+                        printf("[HOST] BATTLE_SETUP sent to %s:%d (Reliable send)\n", 
+                               inet_ntoa(from_joiner.sin_addr), ntohs(from_joiner.sin_port));
                         is_battle_started = true;
                     }
                 } else if (strcmp(buffer, "quit") == 0) {
                     break;
-                } else if (strcmp(buffer, "CHAT_MESSAGE")) {
+                } else if (strcmp(buffer, "CHAT_MESSAGE") == 0) { // Changed to == 0
                     char sender[64] = "Player 1";
                     char content_type[16];
 
@@ -379,19 +728,19 @@ int main() {
                         if (!fgets(message_text, sizeof(message_text), stdin)) continue;
                         clean_newline(message_text);
 
-                        static int seq = 1;
                         sprintf(full_message,
                             "message_type: CHAT_MESSAGE\n"
                             "sender_name: %s\n"
                             "content_type: TEXT\n"
-                            "message_text: %s\n"
-                            "sequence_number: %d\n",
-                            sender, message_text, seq++);
+                            "message_text: %s\n",
+                            sender, message_text); // Sequence number is handled by reliability layer
 
-                        int sent = sendto(socket_network, full_message, strlen(full_message), 0,
-                            (SOCKADDR*)&from_joiner, from_len);
-                        printf("[HOST] Sent TEXT message.\n");
-                        vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
+                        if (rel_send(&server_address, full_message, (int)strlen(full_message)) != 0) {
+                            printf("[HOST] rel_send(CHAT_MESSAGE TEXT) failed.\n");
+                        } else {
+                            printf("[HOST] Sent TEXT message (Reliable send).\n");
+                            vprint("\n[VERBOSE] Sent message (Reliable):\n%s\n", full_message);
+                        }
                     } else if (strcmp(content_type, "STICKER") == 0) {
                         char path[256];
                         printf("Path to PNG (320x320): ");
@@ -416,28 +765,29 @@ int main() {
                         free(raw);
                         
                         size_t needed = strlen(b64) + 512; // 512 bytes for headers and extra fields
-                        char *full_message = malloc(needed); 
+                        char *full_message_dyn = malloc(needed); 
                         
-                        if (!full_message) { 
+                        if (!full_message_dyn) { 
                             printf("[ERROR] Failed to allocate memory for message.\n"); 
                             free(b64); 
                             continue; }
 
-                        static int seq = 1;
-                        sprintf(full_message,
+                        sprintf(full_message_dyn,
                             "message_type: CHAT_MESSAGE\n"
                             "sender_name: %s\n"
                             "content_type: STICKER\n"
-                            "sticker_data: %s\n"
-                            "sequence_number: %d\n",
-                            sender, b64, seq++);
+                            "sticker_data: %s\n",
+                            sender, b64); // Sequence number is handled by reliability layer
 
-                        int sent = sendto(socket_network, full_message, strlen(full_message), 0,
-                            (SOCKADDR*)&from_joiner, from_len);
+                        if (rel_send(&server_address, full_message_dyn, (int)strlen(full_message_dyn)) != 0) {
+                            printf("[HOST] rel_send(CHAT_MESSAGE STICKER) failed.\n");
+                        } else {
+                            printf("[HOST] Sent STICKER message (Reliable send).\n");
+                            vprint("\n[VERBOSE] Sent message (Reliable):\n%s\n", full_message_dyn);
+                        }
+                        
                         free(b64);
-
-                        printf("[HOST] Sent STICKER message.\n");
-                        vprint("\n[VERBOSE] Sent message (%d bytes):\n%s\n", sent, full_message);
+                        free(full_message_dyn);
                     } else {
                         printf("[ERROR] Invalid content_type. Must be TEXT or STICKER.\n");
                     }
@@ -445,27 +795,34 @@ int main() {
                     VERBOSE_MODE = true;
                     printf("\n[SYSTEM] Verbose mode enabled.\n");
 
-                    // Send to joiner
+                    // Send to joiner reliably
                     sprintf(full_message, "message_type: VERBOSE_ON\n");
-                    int sent = sendto(socket_network, full_message, strlen(full_message), 0,
-                                    (SOCKADDR*)&from_joiner, from_len);
-                    vprint("\n[VERBOSE] Sent verbose ON message to joiner (%d bytes)\n%s\n", sent, full_message);
+                    if (rel_send(&server_address, full_message, (int)strlen(full_message)) != 0) {
+                        printf("[HOST] rel_send(VERBOSE_ON) failed.\n");
+                    } else {
+                        vprint("\n[VERBOSE] Sent verbose ON message to joiner (Reliable send)\n%s\n", full_message);
+                    }
                 }
                 else if (!strcmp(buffer, "VERBOSE_OFF")) {
                     VERBOSE_MODE = false;
                     printf("\n[SYSTEM] Verbose mode disabled.\n");
 
-                    // Send to joiner
+                    // Send to joiner reliably
                     sprintf(full_message, "message_type: VERBOSE_OFF\n");
-                    int sent = sendto(socket_network, full_message, strlen(full_message), 0,
-                                    (SOCKADDR*)&from_joiner, from_len);
-                    vprint("\n[VERBOSE] Sent verbose OFF message to joiner (%d bytes)\n%s\n", sent, full_message);
+                    if (rel_send(&server_address, full_message, (int)strlen(full_message)) != 0) {
+                        printf("[HOST] rel_send(VERBOSE_OFF) failed.\n");
+                    } else {
+                        vprint("\n[VERBOSE] Sent verbose OFF message to joiner (Reliable send)\n%s\n", full_message);
+                    }
                 } else {
                     printf("Invalid command. Please type BATTLE_SETUP or quit.\n");
                 }
             }
         }
     }
+    
+    // Shutdown reliability layer before closing socket
+    rel_shutdown();
 
     closesocket(socket_network);
     WSACleanup();
