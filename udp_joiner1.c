@@ -394,7 +394,6 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
   else{
 
   }
-  printf("========================================\n");
 }
 
 void inputChatMessage(char *outbuf, BattleSetupData setup, struct sockaddr_in hostAddr, int hostLen) {
