@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "pokemon_data.h"
-
+static bool pokemon_data_is_loaded = false;
 
 static void handle_attack_announce(BattleManager *bm, const char *msg);
 static void handle_defense_announce(BattleManager *bm, const char *msg);
@@ -262,6 +262,17 @@ static void handle_calculation_confirm(BattleManager *bm, const char *msg) {
 
 // --- Public API ---
 void BattleManager_Init(BattleManager *bm, int isHost, const char *myPokeName) {
+    if (!pokemon_data_is_loaded) {
+        int loaded_count = loadPokemonCSV("pokemon.csv");
+        
+        if (loaded_count > 0) {
+            pokemon_data_is_loaded = true;
+            printf("[GAME INIT] Pokémon data loaded successfully (%d records).\n", loaded_count);
+        } else {
+            printf("[GAME INIT] CRITICAL ERROR: Failed to load pokemon.csv. Exiting.\n");
+            exit(1); // Stop the application if data is critical
+        }
+    }
     memset(bm, 0, sizeof(BattleManager));
     init_battle(&bm->ctx, isHost, (char*)myPokeName);
 }
@@ -322,11 +333,11 @@ void BattleManager_ClearOutgoingMessage(BattleManager *bm) {
 
     ctx->currentState = STATE_WAITING_FOR_MOVE;
     ctx->isMyTurn = isHost;  // Host goes first
-
     // Initialize myPokemon
     Pokemon *p = getPokemonByName(myPokeName);
     if (p) {
         ctx->myPokemon = *p;
+        printf("[GAME] Found Pokemon!\n");
     } else {
         printf("[ERROR] Pokemon not found: %s\n", myPokeName);
     }

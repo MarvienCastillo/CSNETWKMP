@@ -489,7 +489,6 @@ int main() {
   char receive[2048];
   char input[MaxBufferSize];
   char outbuf[2048];
-
   
 
   // Init winsock

@@ -116,13 +116,11 @@ static int loadPokemonCSV(const char* filename) {
 
     fclose(f);
 
-    /*for debugging
+    
     printf("[POKEMON LOADER] Loaded %d Pokémon\n", pokemon_count);
     for (int i = 0; i < 3 && i < pokemon_count; i++) {
         printf("Name: %s, HP: %d, Atk: %d\n", pokedex[i].name, pokedex[i].hp, pokedex[i].attack);
     }
-    */
-
     return pokemon_count;
 }
-#endi
+#endif

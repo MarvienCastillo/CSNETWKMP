@@ -273,7 +273,6 @@ int main(void) {
         printf("WSAStartup failed\n");
         return 1;
     }
-
     // create UDP socket and bind to INADDR_ANY:HOST_PORT (so we receive both unicast and broadcast packets sent to port 9002)
     sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) {
