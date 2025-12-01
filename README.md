@@ -21,39 +21,19 @@ To run the code, please run it in this order:
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-PROJECT STRUCTURE
+# PROJECT STRUCTURE
 
-1. battle_setup.c:         # Pokémon data loading & setup utilities
-  
-2. battle_setup.h
-   
-3. BattleManager.c         # Turn-based battle flow, damage handling, win/loss logic
+1. BattleManager.c - This is responsible for the Game Logic
+2. BattleManager.h - The header files for the BattleManager.c
+3. pokemondata.h - This is responsible for the pokemon loader
+4. pokemon.csv - The csv file or data of Pokemons
+5. udp_host.c - The UDP host logic main file
+6. udp_joiner.c - The UDP joiner logic main file
 
-4. BattleManager.h
-
-5. pokemon_data.h          # Pokémon structs and constants
-
-6. pokemon.csv             # Pokémon stats database
-
-7. udp_host.c              # Host UDP logic
-
-8. udp_host1.c             # Alternate UDP host implementation
-
-9. udp_joiner.c            # Joiner UDP logic
-10. udp_joiner1.c           # Alternate UDP joiner implementation
-
-11. joiner.exe              # Precompiled Windows client
-12. host.exe                # Precompiled Windows host
-
-13. pikachu.png             # Image asset
-
-14. compileAndrunTutorial.txt
-
-15. .vscode/                # VSCode task and settings configuration
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-Project Overview
+# Project Overview
 1. Pokémon Data Loading:
 battle_setup.c parses pokemon.csv and constructs Pokémon structures used throughout the battle.
 
@@ -99,7 +79,7 @@ A detailed report of the tasks implemented by each team member is documented bel
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-AI Usage Section
+# AI Usage Section
 Artificial Intelligence tools were used responsibly as part of the development workflow for this project.
 AI assistance contributed to:
   Generating boilerplate code structures
