@@ -5,41 +5,35 @@ This project implements a multiplayer Pokémon-style battle system using UDP net
 
 The system includes Pokémon data parsing, battle sequencing, core network logic, a reliability layer with ACKs and retransmission, and extended features such as chat and sticker messaging.
 
---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-PROJECT STRUCTURE
+# Steps to run the game
+How to compile the code:
+  gcc <filename> BattleManager.c -o host.exe -lws2_32
+  gcc <filename> BattleManager.c -o joiner.exe -lws2_32
+**Note: Change the filename to the main file which is in this case udp_host.c and udp_joiner.c**
+To run the code, please run it in this order:
+1. Host
+2. Joiner
 
-1. battle_setup.c:         # Pokémon data loading & setup utilities
-  
-2. battle_setup.h
-   
-3. BattleManager.c         # Turn-based battle flow, damage handling, win/loss logic
+**Important Note: If you are playing the game, kindly send BATTLE_SETUP from joiner first before sending from HOST to detect the pokemon**
 
-4. BattleManager.h
-
-5. pokemon_data.h          # Pokémon structs and constants
-
-6. pokemon.csv             # Pokémon stats database
-
-7. udp_host.c              # Host UDP logic
-
-8. udp_host1.c             # Alternate UDP host implementation
-
-9. udp_joiner.c            # Joiner UDP logic
-10. udp_joiner1.c           # Alternate UDP joiner implementation
-
-11. joiner.exe              # Precompiled Windows client
-12. host.exe                # Precompiled Windows host
-
-13. pikachu.png             # Image asset
-
-14. compileAndrunTutorial.txt
-
-15. .vscode/                # VSCode task and settings configuration
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-Project Overview
+# PROJECT STRUCTURE
+
+1. BattleManager.c - This is responsible for the Game Logic
+2. BattleManager.h - The header files for the BattleManager.c
+3. pokemondata.h - This is responsible for the pokemon loader
+4. pokemon.csv - The csv file or data of Pokemons
+5. udp_host.c - The UDP host logic main file
+6. udp_joiner.c - The UDP joiner logic main file
+
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+# Project Overview
 1. Pokémon Data Loading:
 battle_setup.c parses pokemon.csv and constructs Pokémon structures used throughout the battle.
 
@@ -85,7 +79,7 @@ A detailed report of the tasks implemented by each team member is documented bel
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-AI Usage Section
+# AI Usage Section
 Artificial Intelligence tools were used responsibly as part of the development workflow for this project.
 AI assistance contributed to:
   Generating boilerplate code structures
