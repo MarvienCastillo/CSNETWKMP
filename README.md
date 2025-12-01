@@ -7,6 +7,7 @@ The system includes Pokémon data parsing, battle sequencing, core network logic
 
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+# Steps to run the game
 How to compile the code:
   gcc <filename> BattleManager.c -o host.exe -lws2_32
   gcc <filename> BattleManager.c -o joiner.exe -lws2_32
