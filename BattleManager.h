@@ -68,6 +68,5 @@ void BattleManager_TriggerGameOver(BattleManager *bm, const char *winner, const 
 // Initialize the battle context
 void init_battle(BattleContext *ctx, int isHost, const char *myPokeName);
 
-void clean_newline(char *str);
 
 #endif

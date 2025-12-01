@@ -394,6 +394,7 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
   else{
 
   }
+  printf("========================================\n");
 }
 
 void inputChatMessage(char *outbuf, BattleSetupData setup, struct sockaddr_in hostAddr, int hostLen) {
@@ -488,6 +489,7 @@ int main() {
   char receive[2048];
   char input[MaxBufferSize];
   char outbuf[2048];
+
   
 
   // Init winsock
@@ -651,94 +653,93 @@ int main() {
         }
         
         if (!strcmp(input, "ATTACK_ANNOUNCE")) {
-    if (!battle_manager_initialized) {
-        printf("[JOINER] BattleManager not initialized yet. Wait for BATTLE_SETUP from host.\n");
-    } else {
-        char moveName[128];
-        printf("Move name: ");
-        if (fgets(moveName, sizeof(moveName), stdin)) {
-            clean_newline(moveName);
-            if (strlen(moveName) == 0) {
-                printf("[JOINER] No move entered. Skipping.\n");
-            } else {
-                BattleManager_HandleUserInput(&bm, moveName);
-                const char *out = BattleManager_GetOutgoingMessage(&bm);
-                if (out && strlen(out) > 0) {
-                    sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
-                    BattleManager_ClearOutgoingMessage(&bm);
+          if (!battle_manager_initialized) {
+              printf("[JOINER] BattleManager not initialized yet. Wait for BATTLE_SETUP from host.\n");
+          } else {
+              char moveName[128];
+              printf("Move name: ");
+              if (fgets(moveName, sizeof(moveName), stdin)) {
+                clean_newline(moveName);
+                if (strlen(moveName) == 0) {
+                    printf("[JOINER] No move entered. Skipping.\n");
+                } else {
+                    BattleManager_HandleUserInput(&bm, moveName);
+                    const char *out = BattleManager_GetOutgoingMessage(&bm);
+                    if (out && strlen(out) > 0) {
+                        sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
+                        BattleManager_ClearOutgoingMessage(&bm);
+                    }
                 }
             }
+          }
         }
-    }
-}
+        // DEFENSE ANNOUNCE
+        else if (!strcmp(input, "DEFENSE_ANNOUNCE")) {
+            snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                    "message_type: DEFENSE_ANNOUNCE\n"
+                    "sequence_number: %d\n",
+                    ++bm.ctx.currentSequenceNum);
+            sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
+        }
 
-// DEFENSE ANNOUNCE
-else if (!strcmp(input, "DEFENSE_ANNOUNCE")) {
-    snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
-             "message_type: DEFENSE_ANNOUNCE\n"
-             "sequence_number: %d\n",
-             ++bm.ctx.currentSequenceNum);
-    sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
-    BattleManager_ClearOutgoingMessage(&bm);
-}
+        // CALCULATION REPORT
+        else if (!strcmp(input, "CALCULATION_REPORT")) {
+            snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                    "message_type: CALCULATION_REPORT\n"
+                    "attacker: %s\n"
+                    "move_used: %s\n"
+                    "damage_dealt: %d\n"
+                    "defender_hp_remaining: %d\n"
+                    "sequence_number: %d\n",
+                    bm.ctx.myPokemon.name,
+                    bm.ctx.lastMoveUsed,
+                    bm.ctx.lastDamage,
+                    bm.ctx.lastRemainingHP,
+                    ++bm.ctx.currentSequenceNum);
+            sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
+        }
 
-// CALCULATION REPORT
-else if (!strcmp(input, "CALCULATION_REPORT")) {
-    snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
-             "message_type: CALCULATION_REPORT\n"
-             "attacker: %s\n"
-             "move_used: %s\n"
-             "damage_dealt: %d\n"
-             "defender_hp_remaining: %d\n"
-             "sequence_number: %d\n",
-             bm.ctx.myPokemon.name,
-             bm.ctx.lastMoveUsed,
-             bm.ctx.lastDamage,
-             bm.ctx.lastRemainingHP,
-             ++bm.ctx.currentSequenceNum);
-    sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
-    BattleManager_ClearOutgoingMessage(&bm);
-}
+        // CALCULATION CONFIRM
+        else if (!strcmp(input, "CALCULATION_CONFIRM")) {
+            snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                    "message_type: CALCULATION_CONFIRM\n"
+                    "sequence_number: %d\n",
+                    ++bm.ctx.currentSequenceNum);
+            sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
+        }
 
-// CALCULATION CONFIRM
-else if (!strcmp(input, "CALCULATION_CONFIRM")) {
-    snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
-             "message_type: CALCULATION_CONFIRM\n"
-             "sequence_number: %d\n",
-             ++bm.ctx.currentSequenceNum);
-    sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
-    BattleManager_ClearOutgoingMessage(&bm);
-}
+        // RESOLUTION REQUEST
+        else if (!strcmp(input, "RESOLUTION_REQUEST")) {
+            snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
+                    "message_type: RESOLUTION_REQUEST\n"
+                    "attacker: %s\n"
+                    "move_used: %s\n"
+                    "damage_dealt: %d\n"
+                    "defender_hp_remaining: %d\n"
+                    "sequence_number: %d\n",
+                    bm.ctx.myPokemon.name,
+                    bm.ctx.lastMoveUsed,
+                    bm.ctx.lastDamage,
+                    bm.ctx.lastRemainingHP,
+                    ++bm.ctx.currentSequenceNum);
+            sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
+            BattleManager_ClearOutgoingMessage(&bm);
+        }
 
-// RESOLUTION REQUEST
-else if (!strcmp(input, "RESOLUTION_REQUEST")) {
-    snprintf(bm.outgoingBuffer, BM_MAX_MSG_SIZE,
-             "message_type: RESOLUTION_REQUEST\n"
-             "attacker: %s\n"
-             "move_used: %s\n"
-             "damage_dealt: %d\n"
-             "defender_hp_remaining: %d\n"
-             "sequence_number: %d\n",
-             bm.ctx.myPokemon.name,
-             bm.ctx.lastMoveUsed,
-             bm.ctx.lastDamage,
-             bm.ctx.lastRemainingHP,
-             ++bm.ctx.currentSequenceNum);
-    sendMessageAuto(bm.outgoingBuffer, &hostAddr, sizeof(hostAddr), setup, false);
-    BattleManager_ClearOutgoingMessage(&bm);
-}
-
-// GAME OVER
-else if (!strcmp(input, "GAME_OVER")) {
-    BattleManager_TriggerGameOver(&bm, bm.ctx.myPokemon.name, bm.ctx.oppPokemon.name);
-    const char *out = BattleManager_GetOutgoingMessage(&bm);
-    if (out && strlen(out) > 0) {
-        sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
-        BattleManager_ClearOutgoingMessage(&bm);
-    }
-    is_game_over = true;
-    printf("[JOINER] Game Over. Exiting...\n");
-}
+        // GAME OVER
+        else if (!strcmp(input, "GAME_OVER")) {
+            BattleManager_TriggerGameOver(&bm, bm.ctx.myPokemon.name, bm.ctx.oppPokemon.name);
+            const char *out = BattleManager_GetOutgoingMessage(&bm);
+            if (out && strlen(out) > 0) {
+                sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
+                BattleManager_ClearOutgoingMessage(&bm);
+            }
+            is_game_over = true;
+            printf("[JOINER] Game Over. Exiting...\n");
+        }
 
 
         // CHAT_MESSAGE
