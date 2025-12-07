@@ -49,8 +49,7 @@ SOCKET socket_network = INVALID_SOCKET;  // unicast
 
 struct sockaddr_in broadcast_recv_addr;
 
-
-
+struct sockaddr_in last_sender;
 
 // Global variables
 int seed = 0;
@@ -410,7 +409,7 @@ void inputChatMessage(char *outbuf, BattleSetupData setup, struct sockaddr_in ho
     );
 
     // FIX 4: Pass address of hostAddr
-    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,true);
+    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup, !is_handshake_done);
     printf("[JOINER] Sent TEXT chat.\n");
   }
 
@@ -453,7 +452,7 @@ void inputChatMessage(char *outbuf, BattleSetupData setup, struct sockaddr_in ho
     free(b64);
 
     // FIX 4: Pass address of hostAddr
-    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,true);
+    sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup, !is_handshake_done);
     printf("[JOINER] Sent STICKER chat.\n");
   }
   else{
@@ -469,12 +468,9 @@ int main() {
   WSADATA wsa;
   BattleSetupData setup;
   BattleSetupData host_setup;
-  int spectator_count = 0;
   char receive[2048];
   char input[MaxBufferSize];
   char outbuf[2048];
-
-  
 
   // Init winsock
   if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
@@ -568,6 +564,7 @@ int main() {
         if (!is_handshake_done && strstr(receive, "HANDSHAKE_RESPONSE")) {
           hostAddr = broadcast_recv_addr;
           hostAddr.sin_port = htons(9002); // Assuming host listens on 9002
+          last_sender = hostAddr; //save for future unicast messages
         }
         processReceivedMessage(receive, &broadcast_recv_addr, fromLen, &setup,&host_setup,host_setup.pokemonName);
       }
@@ -590,7 +587,7 @@ int main() {
           // We send this as broadcast/unicast to the host, we assume hostAddr is configured for the send port.
           // For the very first message, we must broadcast if the host's IP is unknown.
           // FIX 4: Pass address of hostAddr, set isBroadcast=true for initial handshake
-          sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,true);
+          sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup, !is_handshake_done);
 
           printf("[JOINER] HANDSHAKE_REQUEST sent.\n");
         } else if(!strcmp(input, "SPECTATOR_REQUEST")) {
@@ -599,7 +596,7 @@ int main() {
           sprintf(outbuf, "message_type: SPECTATOR_REQUEST\n");
 
           // FIX 4: Pass address of spectator struct
-          sendMessageAuto(outbuf, &spectator, sizeof(spectator), setup,true);
+          sendMessageAuto(outbuf, &spectator, sizeof(spectator), setup, !is_handshake_done);
 
           printf("[JOINER] SPECTATOR_REQUEST sent.\n");
         }
@@ -619,7 +616,7 @@ int main() {
           );
 
           // FIX 4: Pass address of hostAddr
-          sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup,false);
+          sendMessageAuto(outbuf, &hostAddr, sizeof(hostAddr), setup, !is_handshake_done);
           battle_setup_received = true;
           printf("[JOINER] Sent BATTLE_SETUP.\n");
         }
@@ -722,7 +719,7 @@ int main() {
           // Send to joiner
           sprintf(outbuf, "message_type: VERBOSE_ON\n");
           // FIX 4: Pass address of hostAddr
-          sendMessageAuto(outbuf,&hostAddr,sizeof(hostAddr),setup,true);
+          sendMessageAuto(outbuf,&hostAddr,sizeof(hostAddr),setup, !is_handshake_done);
           vprint("\n[VERBOSE] Sent verbose ON message to joiner %s\n", outbuf);
         }
 
@@ -733,7 +730,7 @@ int main() {
           // Send to joiner
           sprintf(outbuf, "message_type: VERBOSE_OFF\n");
           // FIX 4: Pass address of hostAddr
-          sendMessageAuto(outbuf,&hostAddr,sizeof(hostAddr),setup,true);
+          sendMessageAuto(outbuf,&hostAddr,sizeof(hostAddr),setup, !is_handshake_done);
           vprint("\n[VERBOSE] Sent verbose OFF message to joiner%s\n", outbuf);
         }
 

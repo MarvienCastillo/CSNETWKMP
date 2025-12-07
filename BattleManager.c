@@ -1,6 +1,9 @@
 #include "BattleManager.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
+#include <stdlib.h>
+#include <time.h>
 #include "pokemon_data.h"
 static bool pokemon_data_is_loaded = false;
 
@@ -128,60 +131,6 @@ void handle_attack_announce(BattleManager *bm, const char *msg) {
     ctx->currentState = STATE_WAITING_FOR_MOVE;
 }
 
-void handle_defense_announce(BattleManager *bm, const char *msg, char name[64]) {
-    BattleContext *ctx = &bm->ctx;
-
-    printf("[GAME] Opponent ready. Calculating damage...\n");
-
-    Move *mv = getMoveByName(ctx->lastMoveUsed,name);
-
-    // int dmg = calculate_damage(&ctx->myPokemon, &ctx->oppPokemon, mv);
-    // int remaining_hp = ctx->oppPokemon.hp - dmg;
-    // if (remaining_hp < 0) remaining_hp = 0;
-
-    // ctx->oppPokemon.hp = remaining_hp;
-
-    if (ctx->oppPokemon.hp <= 0) {
-    
-        snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
-            "message_type: GAME_OVER\n"
-            "winner: %s\n"
-            "loser: %s\n"
-            "sequence_number: %d\n",
-            ctx->myPokemon.name,
-            ctx->oppPokemon.name,
-            ++ctx->currentSequenceNum
-        );
-
-        ctx->currentState = STATE_GAME_OVER;
-        printf("[GAME] Opponent fainted! GAME_OVER triggered.\n");
-        return;
-    }
-
-    snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
-        "message_type: CALCULATION_REPORT\n"
-        "attacker: %s\n"
-        "move_used: %s\n"
-        "remaining_health: %d\n"
-        "damage_dealt: %d\n"
-        "defender_hp_remaining: %d\n"
-        "status_message: %s used %s! It was super effective!\n"
-        "sequence_number: %d\n",
-        ctx->myPokemon.name,
-        ctx->lastMoveUsed,
-        ctx->myPokemon.hp,
-        1,
-        2,
-        ctx->myPokemon.name,
-        ctx->lastMoveUsed,
-        ++ctx->currentSequenceNum);
-
-    // ctx->oppPokemon.hp = remaining_hp;
-
-    // Keep turn state
-    ctx->currentState = STATE_PROCESSING_TURN;
-}
-
 void handle_calculation_report(BattleManager *bm, const char *msg) {
     BattleContext *ctx = &bm->ctx;
 
@@ -234,6 +183,7 @@ void handle_calculation_report(BattleManager *bm, const char *msg) {
         ctx->currentState = STATE_WAITING_FOR_RESOLUTION;
     }
 }
+
 void handle_resolution_request(BattleManager *bm, const char *msg) {
     BattleContext *ctx = &bm->ctx;
 
@@ -352,4 +302,123 @@ void init_battle(BattleContext *ctx, int isHost, const char *myPokeName) {
     }
 
     ctx->currentSequenceNum = 0;
+}
+
+static float get_type_multiplier(const char *moveType, const char *defType1, const char *defType2) {
+    float mult = 1.0f;
+
+    // EXAMPLE type chart (add more as needed)
+    if (strcmp(moveType, "Fire") == 0) {
+        if (strcmp(defType1, "Grass") == 0 || strcmp(defType2, "Grass") == 0) mult *= 2.0f;
+        if (strcmp(defType1, "Water") == 0 || strcmp(defType2, "Water") == 0) mult *= 0.5f;
+    }
+
+    if (strcmp(moveType, "Water") == 0) {
+        if (strcmp(defType1, "Fire") == 0 || strcmp(defType2, "Fire") == 0) mult *= 2.0f;
+        if (strcmp(defType1, "Grass") == 0 || strcmp(defType2, "Grass") == 0) mult *= 0.5f;
+    }
+
+    if (strcmp(moveType, "Electric") == 0) {
+        if (strcmp(defType1, "Water") == 0 || strcmp(defType2, "Water") == 0) mult *= 2.0f;
+        if (strcmp(defType1, "Ground") == 0 || strcmp(defType2, "Ground") == 0) mult = 0.0f; // immune
+    }
+
+    return mult;
+}
+
+
+
+int calculate_damage(Pokemon *attacker, Pokemon *defender, Move *move) {
+    if (move->power <= 0)
+        return 0; // status move / invalid
+
+    // PHYSICAL vs SPECIAL
+    int atk = (strcmp(move->category, "Physical") == 0)
+                ? attacker->attack
+                : attacker->sp_attack;
+
+    int def = (strcmp(move->category, "Physical") == 0)
+                ? defender->defense
+                : defender->sp_defense;
+
+    // BASE DAMAGE (Pokémon-style simplified)
+    float base = (((2.0f * 50 / 5) + 2) * move->power * (float)atk / (float)def) / 50.0f + 2;
+
+    // STAB: Same-Type Attack Bonus
+    float stab = (
+        strcmp(attacker->type1, move->type) == 0 ||
+        strcmp(attacker->type2, move->type) == 0
+    ) ? 1.5f : 1.0f;
+
+    // TYPE EFFECTIVENESS
+    float typeMult = get_type_multiplier(move->type, defender->type1, defender->type2);
+
+    // RANDOM VARIATION
+    float randMult = (rand() % 16 + 85) / 100.0f; // 0.85 to 1.00
+
+    // FINAL DAMAGE
+    float dmg = base * stab * typeMult * randMult;
+
+    if (dmg < 1) dmg = 1; // minimum damage rule
+
+    return (int)dmg;
+}
+
+void handle_defense_announce(BattleManager *bm, const char *msg, char name[64]) {
+    BattleContext *ctx = &bm->ctx;
+
+    printf("[GAME] Opponent ready. Calculating damage...\n");
+
+    Move *mv = getMoveByName(ctx->lastMoveUsed,name);
+
+    int dmg = calculate_damage(&ctx->myPokemon, &ctx->oppPokemon, mv);
+    
+    ctx->oppPokemon.hp -= dmg;
+    if (ctx->oppPokemon.hp < 0)
+        ctx->oppPokemon.hp = 0;
+
+    ctx->lastDamage = dmg;
+    ctx->lastRemainingHP = ctx->oppPokemon.hp;
+
+    if (ctx->oppPokemon.hp <= 0) {
+    
+        snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
+            "message_type: GAME_OVER\n"
+            "winner: %s\n"
+            "loser: %s\n"
+            "sequence_number: %d\n",
+            ctx->myPokemon.name,
+            ctx->oppPokemon.name,
+            ++ctx->currentSequenceNum
+        );
+
+        ctx->currentState = STATE_GAME_OVER;
+        printf("[GAME] Opponent fainted! GAME_OVER triggered.\n");
+        return;
+    }
+
+    snprintf(bm->outgoingBuffer, BM_MAX_MSG_SIZE,
+        "message_type: CALCULATION_REPORT\n"
+        "attacker: %s\n"
+        "move_used: %s\n"
+        "remaining_health: %d\n"
+        "damage_dealt: %d\n"
+        "defender_hp_remaining: %d\n"
+        "status_message: %s dealt %d damage with %s\n"
+        "sequence_number: %d\n",
+        ctx->myPokemon.name,
+        ctx->lastMoveUsed,
+        ctx->myPokemon.hp,
+        dmg,
+        ctx->oppPokemon.hp,
+        ctx->myPokemon.name,
+        dmg,
+        ctx->lastMoveUsed,
+        ++ctx->currentSequenceNum
+    );
+
+    // ctx->oppPokemon.hp = remaining_hp;
+
+    // Keep turn state
+    ctx->currentState = STATE_PROCESSING_TURN;
 }

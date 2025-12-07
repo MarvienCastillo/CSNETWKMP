@@ -181,7 +181,7 @@ void processChatMessage(char *msg) {
     }
 }
 
-void processBattleSetup(char *msg, BattleSetupData *out, BattleManager bm) {
+void processBattleSetup(char *msg, BattleSetupData *out, BattleManager *bm) {
     char *p;
     p = strstr(msg, "communication_mode: ");
     if (p) sscanf(p, "communication_mode: %31[^\n]", out->communicationMode);
@@ -193,8 +193,12 @@ void processBattleSetup(char *msg, BattleSetupData *out, BattleManager bm) {
     if (p) sscanf(p, "\"special_defense_uses\": %d", &out->boosts.specialDefense);
     printf("[HOST] Parsed BATTLE_SETUP: mode=%s, pokemon=%s, atk=%d, def=%d\n",
            out->communicationMode, out->pokemonName, out->boosts.specialAttack, out->boosts.specialDefense);
-    BattleManager_Init(&bm, 1, out->pokemonName);
-    battle_manager_initialized = true;
+    
+    if (!battle_manager_initialized) {
+        BattleManager_Init(bm, 1, out->pokemonName); // 1 = host player
+        battle_manager_initialized = true;
+        printf("[HOST] BattleManager initialized for host Pokemon: %s\n", out->pokemonName);
+    }
 }
 
 /* ---------------- sending helpers ---------------- */
@@ -210,12 +214,12 @@ void sendMessageAuto(const char *msg,
                      BattleSetupData setup, bool isBroadcast)
 {
     // BROADCAST MODE
-    if (!strcmp(setup.communicationMode, "BROADCAST") || !battle_setup_received || isBroadcast) {
+    if (isBroadcast && strcmp(setup.communicationMode,"BROADCAST")==0) {
         struct sockaddr_in bc;
         memset(&bc, 0, sizeof(bc));
         bc.sin_family = AF_INET;
         bc.sin_port = htons(9003);            // host listens on 9002
-        bc.sin_addr.s_addr =  inet_addr("255.255.255.255");
+        bc.sin_addr.s_addr =  inet_addr(BROADCAST_IP);
     
         int enable = 1;
         setsockopt(sock, SOL_SOCKET, SO_BROADCAST,
@@ -248,7 +252,6 @@ int main(void) {
     WSADATA wsa;
     struct sockaddr_in addr, from;
     int from_len = sizeof(from);
-    bool battlemanager_initialized = false;
 
     BattleSetupData my_setup;
     BattleSetupData peer_setup;
@@ -265,7 +268,8 @@ int main(void) {
     char line[512];
     char fullmsg[MAXBUF];
 
-    struct sockaddr_in last_peer; int last_peer_len = sizeof(last_peer);
+    struct sockaddr_in last_peer; 
+    int last_peer_len = sizeof(last_peer);
     memset(&last_peer, 0, sizeof(last_peer));
     last_peer.sin_family = AF_INET;
     last_peer.sin_addr.s_addr = INADDR_ANY;
@@ -345,6 +349,7 @@ int main(void) {
                     // reply with handshake_response
                     snprintf(fullmsg, sizeof(fullmsg), "message_type: HANDSHAKE_RESPONSE\nseed: %d\n", seed);
                     last_peer = from;
+                    last_peer_len = from_len;
                     sendMessageAuto(fullmsg,last_peer, last_peer_len, my_setup, false);
                     is_handshake_done = true;
                     printf("[HOST] HANDSHAKE_RESPONSE sent to %s:%d\n", inet_ntoa(last_peer.sin_addr), ntohs(last_peer.sin_port));
@@ -352,19 +357,20 @@ int main(void) {
                     printf("[HOST] SPECTATOR_REQUEST from %s:%d\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port));
                     snprintf(fullmsg,sizeof(fullmsg),"message_type: SPECTATOR_RESPONSE");
                     last_peer = from;
+                    last_peer_len = from_len;
                     sendMessageAuto(fullmsg, last_peer,last_peer_len,my_setup,false);
                     printf("[HOST] SPECTATOR_RESPONSE sent to %s:%d\n", inet_ntoa(last_peer.sin_addr), ntohs(last_peer.sin_port));
                 }
                 else if (!strncmp(mt, "BATTLE_SETUP", strlen("BATTLE_SETUP"))) {
                     printf("[HOST] Received BATTLE_SETUP from %s:%d\n%s\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port), recvbuf);
                     // parse joiner's setup into peer_setup
-                    processBattleSetup(recvbuf, &peer_setup,bm);
+                    processBattleSetup(recvbuf, &peer_setup,&bm);
                     sprintf(recvbuf,
                         "message_type: BATTLE_SETUP\n"
                         "communication_mode: %s\n"
                         "pokemon_name: %s\n"
                         "stat_boosts: { \"special_attack_uses\": %d, \"special_defense_uses\": %d }\n",
-                        peer_setup, peer_setup.pokemonName,
+                        peer_setup.communicationMode, peer_setup.pokemonName,
                         peer_setup.boosts.specialAttack, peer_setup.boosts.specialDefense);
                     sendMessageAuto(recvbuf,last_peer,last_peer_len,peer_setup,true);
                     is_battle_started = true;
@@ -454,7 +460,7 @@ int main(void) {
 
                     // Initialize BattleManager for host (player 1) using the host's chosen pokemon
                     BattleManager_Init(&bm, 1, my_setup.pokemonName);
-                    battlemanager_initialized = true;
+                    battle_manager_initialized = true;
 
                 // For setup we unicast to last_peer (joiner)
                 sendMessageAuto(fullmsg,last_peer, sizeof(last_peer), my_setup,true);
@@ -465,7 +471,7 @@ int main(void) {
             }
             else if(!strcmp(line,"ATTACK_ANNOUNCE")){
                 // Host sending a MOVE using BattleManager
-                if (!battlemanager_initialized) {
+                if (!battle_manager_initialized) {
                     printf("[HOST] BattleManager not initialized yet. Send BATTLE_SETUP first.\n");
                     continue;
                 }
@@ -623,9 +629,10 @@ int main(void) {
 
                 // Send to joiner
                 sprintf(fullmsg, "message_type: VERBOSE_ON\n");
-                int sent = sendto(sock, fullmsg, strlen(fullmsg), 0,
-                                (SOCKADDR*)&last_peer, from_len);
-                vprint("\n[VERBOSE] Sent verbose ONN message to joiner (%d bytes)\n%s\n", sent, fullmsg);
+                //int sent = sendto(sock, fullmsg, strlen(fullmsg), 0,
+                //                (SOCKADDR*)&last_peer, from_len);
+                //vprint("\n[VERBOSE] Sent verbose ONN message to joiner (%d bytes)\n%s\n", sent, fullmsg);
+                sendMessageAuto(fullmsg, last_peer, last_peer_len, my_setup, false);
                 continue;
             }
             else if (!strcmp(line, "VERBOSE_OFF")) {
@@ -634,9 +641,10 @@ int main(void) {
 
                 // Send to joiner
                 sprintf(fullmsg, "message_type: VERBOSE_OFF\n");
-                int sent = sendto(sock, fullmsg, strlen(fullmsg), 0,
-                                (SOCKADDR*)&last_peer, from_len);
-                vprint("\n[VERBOSE] Sent verbose OFF message to joiner (%d bytes)\n%s\n", sent, fullmsg);
+                //int sent = sendto(sock, fullmsg, strlen(fullmsg), 0,
+                //                (SOCKADDR*)&last_peer, from_len);
+                //vprint("\n[VERBOSE] Sent verbose OFF message to joiner (%d bytes)\n%s\n", sent, fullmsg);
+                sendMessageAuto(fullmsg, last_peer, last_peer_len, my_setup, false);
                 continue;
             }
             else{

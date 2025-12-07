@@ -10,12 +10,14 @@
 #include <windows.h>
 #define strcasecmp _stricmp
 #else
-#include <strings.h>
 #endif
 
 // --- MOVE STRUCTURE (Remains required by BattleManager.h) ---
 typedef struct {
     char name[64];
+    char type[32];
+    int power;
+    char category[16];
 } Move;
 
 // --- POKEMON STRUCTURE ---
