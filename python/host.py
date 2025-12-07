@@ -74,7 +74,7 @@ def process_message(msg, addr):
     if msg_type == "HANDSHAKE_REQUEST":
         seed = random.randint(0, 999999)
         sock.sendto(f"message_type: HANDSHAKE_RESPONSE\nseed: {seed}\n".encode('utf-8'), addr)
-        joiners[addr] = {"seed": seed, "battle_setup_done": False}
+        joiners[addr] = {"seed": seed, "battle_setup_done": False,"addr":addr}
         print(f"[HOST] Handshake with {addr}, seed={seed}")
 
     elif msg_type == "SPECTATOR_REQUEST":
@@ -152,7 +152,15 @@ def user_input_loop():
             host_addr = ("HOST", 0)
             battle_manager.setup_battle(host_addr, pokemon, boosts, mode)
             print(f"[HOST] Battle setup complete: Pokémon={pokemon.name}, mode={mode}, boosts={boosts}")
-
+            msg = (
+                f"message_type: BATTLE_SETUP\n"
+                f"communication_mode: {mode}\n"
+                f"pokemon_name: {pokemon.name}\n"
+                f"stat_boosts: {json.dumps(boosts)}\n"
+            )
+            for addr in list(joiners.keys()) + list(spectators.keys()):
+                sock.sendto(msg.encode('utf-8'), addr)
+            print(f"[JOINER] BATTLE_SETUP sent for {pokemon.name}")
         elif cmd.startswith("battle_action "):
             action = cmd[len("battle_action "):]
             host_addr = ("HOST", 0)
