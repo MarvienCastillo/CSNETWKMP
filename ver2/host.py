@@ -24,79 +24,80 @@ print(f"[HOST] Listening on port {HOST_PORT}...")
 # ------------------------
 class BattleManager:
     def __init__(self):
-        self.battles = {}  # key -> battle state ("HOST" or addr)
+        self.battles = {}  # "HOST" or addr -> battle state
 
     def setup_battle(self, key, pokemon, boosts, mode):
         self.battles[key] = {
             "pokemon": pokemon,
             "boosts": boosts,
-            "mode": mode,
+            "hp": 100,  # pokemon health
             "turn": 0,
-            "current_player": "HOST",
+            "current_player": "HOST" if key == "HOST" else "JOINER",
             "battle_over": False,
-            "hp": 100,
             "special_attack_uses": boosts.get("special_attack_uses", 4),
             "special_defense_uses": boosts.get("special_defense_uses", 3)
         }
 
     def show_battle(self, key):
         battle = self.battles.get(key)
-        if not battle:
-            print(f"[BATTLE] No battle for {key}")
-            return
-        print(f"[BATTLE][{key}] Pokémon={battle['pokemon'].name}, HP={battle['hp']}, "
-              f"Boosts={battle['boosts']}, Turn={battle['turn']}, Current={battle['current_player']}")
+        if battle:
+            print(f"[BATTLE][{key}] Pokémon={battle['pokemon'].name}, HP={battle['hp']}, "
+                  f"Boosts={battle['boosts']}, Turn={battle['turn']}, Current={battle['current_player']}")
 
-    def calculate_damage(self, attacker_key, defender_key, move_name):
+    def calculate_damage(self, attacker, defender, move_name):
+        move = MOVES.get(move_name.lower(), {"power": 1.0, "type": "Normal", "category": "physical"})
+
+        if move["category"] == "physical":
+            atk_stat = attacker["pokemon"].attack
+            def_stat = defender["pokemon"].defense
+        else:
+            atk_stat = attacker["pokemon"].sp_attack
+            def_stat = defender["pokemon"].sp_defense
+
+        base_power = move.get("power", 1.0)
+
+        type1_effect = get_type_effectiveness(move["type"], defender["pokemon"].type1)
+        type2_effect = 1.0
+        if defender["pokemon"].type2:
+            type2_effect = get_type_effectiveness(move["type"], defender["pokemon"].type2)
+
+        type_multiplier = type1_effect * type2_effect
+        damage = max(1, int((atk_stat / max(1, def_stat)) * base_power * type_multiplier))
+
+        status_message = f"{attacker['pokemon'].name} used {move_name}!"
+        if type_multiplier > 1.0:
+            status_message += " It was super effective!"
+        elif 0 < type_multiplier < 1.0:
+            status_message += " It was not very effective."
+        elif type_multiplier == 0:
+            status_message += " It had no effect!"
+
+        return damage, status_message
+
+    def process_attack(self, attacker_key, defender_key, move_name):
         attacker = self.battles.get(attacker_key)
         defender = self.battles.get(defender_key)
-        if not attacker or not defender or defender["battle_over"]:
-            return 0
+        if not attacker or not defender or attacker["battle_over"] or defender["battle_over"]:
+            return 0, "Battle is over"
 
-        move = MOVES.get(move_name.lower())
-        if not move:
-            print(f"[BATTLE][ERROR] Unknown move {move_name}")
-            return 0
+        # Damage calculation
+        damage, status_message = self.calculate_damage(attacker, defender, move_name)
 
-        category = move["category"]
-        base_power = move["power"]
-        move_type = move["type"]
-
-        if category == "physical":
-            attacker_stat = attacker["pokemon"].attack
-            defender_stat = defender["pokemon"].defense
-        else:
-            attacker_stat = attacker["pokemon"].sp_attack
-            defender_stat = defender["pokemon"].sp_defense
-
-        defender_types = [defender["pokemon"].type1]
-        if defender["pokemon"].type2:
-            defender_types.append(defender["pokemon"].type2)
-        type_multiplier = get_type_effectiveness(move_type, defender_types)
-
-        # Consume special attack uses
-        if category == "special" and attacker["special_attack_uses"] > 0:
-            attacker["special_attack_uses"] -= 1
-
-        damage = max(1, int(((attacker_stat / max(1, defender_stat)) * base_power) * type_multiplier))
-
+        # Apply damage
         defender["hp"] -= damage
+        attacker["turn"] += 1
+
+        # Switch turn
+        attacker["current_player"] = "JOINER" if attacker["current_player"] == "HOST" else "HOST"
+        defender["current_player"] = "JOINER" if defender["current_player"] == "HOST" else "HOST"
+
+        # Battle over check
         if defender["hp"] <= 0:
             defender["hp"] = 0
             defender["battle_over"] = True
-        attacker["turn"] += 1
+            status_message += f" {defender['pokemon'].name} fainted! {attacker['pokemon'].name} wins!"
 
-        # Toggle current player markers
-        for k in ("HOST", defender_key):
-            b = self.battles.get(k)
-            if b:
-                b["current_player"] = "JOINER" if b["current_player"] == "HOST" else "HOST"
-
-        print(f"[BATTLE][HOST] {attacker['pokemon'].name} used {move_name} on {defender['pokemon'].name} "
-              f"-> damage={damage}, HP remaining={defender['hp']}")
-        if defender["battle_over"]:
-            print(f"[BATTLE] {defender['pokemon'].name} fainted! Winner: {attacker['pokemon'].name}")
-        return damage
+        return damage, status_message
 
 battle_manager = BattleManager()
 
@@ -104,7 +105,6 @@ battle_manager = BattleManager()
 # Listener
 # ------------------------
 def listen():
-    global allow_attack_input
     while True:
         try:
             data, addr = sock.recvfrom(65536)
@@ -116,7 +116,7 @@ def listen():
             print(f"[ERROR] Listening thread: {e}")
 
 # ------------------------
-# Message Processing
+# Message processing
 # ------------------------
 def process_message(msg, addr):
     global allow_attack_input
@@ -126,7 +126,6 @@ def process_message(msg, addr):
         print(f"[HOST] Unknown message from {addr}: {msg}")
         return
 
-    # Ensure sequence number store exists
     if addr not in sequence_numbers:
         sequence_numbers[addr] = 0
     sequence_numbers["HOST"] = sequence_numbers.get("HOST", 0)
@@ -168,7 +167,6 @@ def process_message(msg, addr):
                 "battle_setup_done": True
             })
 
-            # Setup battle for joiner
             battle_manager.setup_battle(addr, pokemon, boosts, comm_mode)
             if "HOST" not in battle_manager.battles:
                 print("[HOST] You (HOST) must run BATTLE_SETUP to define your Pokémon and boosts.")
@@ -177,35 +175,23 @@ def process_message(msg, addr):
             joiners[addr]["battle_setup_done"] = True
             battle_ready[addr] = True
 
-            # Enable host to attack if both sides ready
             if "HOST" in battle_manager.battles and all(battle_ready.values()):
                 allow_attack_input = True
-                print(f"[HOST] Both battle setups done. It's HOST's turn.")
+                print(f"[HOST] Both battle setups done. It's HOST's turn. Use ATTACK_ANNOUNCE <move_name> when ready.")
+
         except Exception as e:
             print(f"[HOST] Failed to parse BATTLE_SETUP from {addr}: {e}")
         return
 
     elif msg_type == "ATTACK_ANNOUNCE":
-        move_type = next((line.split(":",1)[1].strip() for line in lines if line.startswith("move_type:")), "ATTACK")
-        print(f"[BATTLE] Received ATTACK_ANNOUNCE {move_type} from {addr}")
-
-        # Apply attack: attacker=joiner addr, defender=HOST
-        damage = battle_manager.calculate_damage(addr, "HOST", move_type)
-
-        # Broadcast update
-        msg_update = (
-            f"message_type: BATTLE_UPDATE\n"
-            f"player: JOINER\nmove: {move_type}\n"
-            f"damage: {damage}\n"
-            f"hp_host: {battle_manager.battles['HOST']['hp']}\n"
-            f"hp_joiner: {battle_manager.battles[addr]['hp']}\n"
-        )
-        for t in list(joiners.keys()) + list(spectators.keys()):
-            sock.sendto(msg_update.encode('utf-8'), t)
-
-        if battle_manager.battles["HOST"]["battle_over"]:
-            print(f"[BATTLE] Battle over. Winner: {addr}")
+        move_name = next((line.split(":",1)[1].strip() for line in lines if line.startswith("move_type:")), "ATTACK")
+        print(f"[BATTLE] ATTACK_ANNOUNCE {move_name} from {addr}")
+        battle_manager.process_attack(addr, "HOST", move_name)
         allow_attack_input = True
+        return
+
+    elif msg_type == "CALCULATION_REPORT":
+        print(f"[CALCULATION REPORT from {addr}]\n{msg}")
         return
 
     elif msg_type == "CHAT_MESSAGE":
@@ -218,7 +204,7 @@ def process_message(msg, addr):
         print(f"[HOST] Unhandled message_type={msg_type} from {addr}")
 
 # ------------------------
-# Utility
+# Utility: prompt numeric boosts
 # ------------------------
 def prompt_boosts():
     while True:
@@ -262,7 +248,6 @@ def user_input_loop():
             battle_manager.setup_battle("HOST", pokemon, boosts, comm_mode)
             print("[HOST] Battle setup done")
             battle_manager.show_battle("HOST")
-            # send to joiners
             msg = f"message_type: BATTLE_SETUP\ncommunication_mode: {comm_mode}\npokemon_name: {pokemon.name}\nstat_boosts: {json.dumps(boosts)}\n"
             for addr in joiners.keys():
                 sock.sendto(msg.encode('utf-8'), addr)
@@ -271,7 +256,7 @@ def user_input_loop():
                     battle_ready[a] = True
             if all(battle_ready.values()) if battle_ready else False:
                 allow_attack_input = True
-                print("[HOST] Both battle setups done. You may attack.")
+                print("[HOST] Both battle setups done. You may attack when ready.")
             continue
 
         if cmd == "ATTACK_ANNOUNCE":
@@ -281,30 +266,24 @@ def user_input_loop():
             if len(parts) < 2:
                 print("Usage: ATTACK_ANNOUNCE <move_name>")
                 continue
-            move_type = parts[1]
+            move_name = parts[1]
             if not joiners:
                 print("[HOST] No joiner connected.")
                 continue
             opponent_addr = next(iter(joiners.keys()))
-            seq = sequence_numbers.get("HOST",0)+1
+            seq = sequence_numbers.get("HOST", 0) + 1
             sequence_numbers["HOST"] = seq
-            msg = f"message_type: ATTACK_ANNOUNCE\nmove_type: {move_type}\nsequence_number: {seq}\n"
+            msg = f"message_type: ATTACK_ANNOUNCE\nmove_type: {move_name}\nsequence_number: {seq}\n"
             sock.sendto(msg.encode('utf-8'), opponent_addr)
-            damage = battle_manager.calculate_damage("HOST", opponent_addr, move_type)
-            msg_update = (
-                f"message_type: BATTLE_UPDATE\nplayer: HOST\nmove: {move_type}\n"
-                f"damage: {damage}\n"
-                f"hp_host: {battle_manager.battles['HOST']['hp']}\n"
-                f"hp_joiner: {battle_manager.battles[opponent_addr]['hp']}\n"
-            )
-            for t in list(joiners.keys()) + list(spectators.keys()):
-                sock.sendto(msg_update.encode('utf-8'), t)
+            battle_manager.process_attack("HOST", opponent_addr, move_name)
             allow_attack_input = False
             continue
 
         if cmd == "exit":
             print("[HOST] Exiting...")
             break
+
+        print("[HOST] Unknown command. Valid: CHAT_MESSAGE, BATTLE_SETUP, ATTACK_ANNOUNCE, exit")
 
 # ------------------------
 # Main
