@@ -561,8 +561,8 @@ int main(void) {
                 char sender[64] = "Player 1";
                 char content_type[16];
 
-                printf("sender_name: ");
-                if (!fgets(sender, sizeof(sender), stdin)) continue;
+                printf("sender_name: Player 1\n");
+                
                 clean_newline(sender);
 
                 printf("content_type (TEXT/STICKER): ");
