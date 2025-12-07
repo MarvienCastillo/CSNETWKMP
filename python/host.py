@@ -169,7 +169,8 @@ def user_input_loop():
             msg = f"message_type: BATTLE_ACTION\naction: {action}\n"
             for addr in list(joiners.keys()) + list(spectators.keys()):
                 sock.sendto(msg.encode('utf-8'), addr)
-
+        elif cmd == "ATTACK_ANNOUNCE":
+            move = next(input("move_name: ").strip())
         elif cmd == "list_joiners":
             print(f"[HOST] Joiners: {joiners}")
         elif cmd == "list_spectators":
