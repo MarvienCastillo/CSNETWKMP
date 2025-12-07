@@ -61,7 +61,7 @@ static Pokemon* getPokemonByName(const char* name) {
 }
 
 // Assumed function: Look up the full Move struct (Type, Power, Category) by name
-static Move* getMoveByName(const char *name,const char* pokemon_name) {
+static Move* getMoveByName(const char *name,char* pokemon_name) {
     Pokemon *p = getPokemonByName(pokemon_name);
     for (int i = 0; i < p->num_moves; i++) {
         if (strcasecmp(p->moveset[i].name, name) == 0) {
@@ -148,7 +148,7 @@ static void parse_combined_moveset(char *token, Pokemon *p) {
             // Store the cleaned NAME
             strncpy(p->moveset[i].name, item_name, sizeof(p->moveset[0].name) - 1);
             p->moveset[i].name[sizeof(p->moveset[0].name) - 1] = '\0';
-            printf("Move's name: %s\tPokemon's Name: %s\n", p->moveset[i].name,p->name);
+            // printf("Move's name: %s\tPokemon's Name: %s\n", p->moveset[i].name,p->name);
             i++;
         }
 

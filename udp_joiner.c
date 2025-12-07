@@ -207,59 +207,47 @@ void processChatMessage(char *msg) {
     saveSticker(p_data + strlen("sticker_data: "), sender);
   }
 }
-void processBattleMessage(const char *msg, BattleSetupData *setup, struct sockaddr_in peer, int peer_len) {
-  if (!battle_manager_initialized || !msg) return;
 
-  char *mt = strstr(msg, "message_type: ");
-  if (!mt) return;
-  mt += strlen("message_type: ");
-
-  // Only process battle-related messages
-  if (!strncmp(mt, "ATTACK_ANNOUNCE", 15) ||
-    !strncmp(mt, "DEFENSE_ANNOUNCE", 16) ||
-    !strncmp(mt, "CALCULATION_REPORT", 18) ||
-    !strncmp(mt, "CALCULATION_CONFIRM", 19) ||
-    !strncmp(mt, "RESOLUTION_REQUEST", 18) ||
-    !strncmp(mt, "GAME_OVER", 9))
-  {
-    BattleManager_HandleIncoming(&bm, msg);
-
-    const char *out = BattleManager_GetOutgoingMessage(&bm);
-    if (out && strlen(out) > 0 && setup && &peer) {
-      // FIX 3: Pass address of peer
-      sendMessageAuto(out, &peer, peer_len, *setup, false);
-      BattleManager_ClearOutgoingMessage(&bm);
-    }
-  }
-}
 
 // ----------------------------------------------------
 // BATTLE SETUP Input + Processing
 // ----------------------------------------------------
 void getInputBattleSetup(BattleSetupData *s) {
-  printf("communication_mode (P2P/BROADCAST): ");
-  fgets(s->communicationMode, sizeof(s->communicationMode), stdin);
-  clean_newline(s->communicationMode);
+    printf("communication_mode (P2P/BROADCAST): ");
+    fgets(s->communicationMode, sizeof(s->communicationMode), stdin);
+    clean_newline(s->communicationMode);
 
-  printf("pokemon_name: ");
-  fgets(s->pokemonName, sizeof(s->pokemonName), stdin);
-  clean_newline(s->pokemonName);
+    printf("pokemon_name: ");
+    
+    // Check the return value of fgets BEFORE using the data
+    if (fgets(s->pokemonName, sizeof(s->pokemonName), stdin) == NULL) {
+        printf("Error: No input received for Pokemon name. Aborting setup.\n");
+    }
+    
+    // Only clean the line if input was successful
+    clean_newline(s->pokemonName); 
 
-  char buf[256];
-  printf("stat_boosts ({\"special_attack_uses\": 4, \"special_defense_uses\": 3}): ");
-  fgets(buf, sizeof(buf), stdin);
-  clean_newline(buf);
+    char buf[256];
+    printf("stat_boosts ({\"special_attack_uses\": 4, \"special_defense_uses\": 3}): ");
+    
+    // Add safety check here too, as input might fail again
+    if (fgets(buf, sizeof(buf), stdin) == NULL) {
+        printf("Error: No input received for stat boosts. Aborting setup.\n");
+        return;
+    }
+    
+    clean_newline(buf);
 
-  char *atk = strstr(buf, "\"special_attack_uses\": ");
-  char *def = strstr(buf, "\"special_defense_uses\": ");
+    char *atk = strstr(buf, "\"special_attack_uses\": ");
+    char *def = strstr(buf, "\"special_defense_uses\": ");
 
-  if (!atk || !def) {
-    printf("Invalid format.\n");
-    return;
-  }
+    if (!atk || !def) {
+        printf("Invalid format.\n");
+        return;
+    }
 
-  sscanf(atk, "\"special_attack_uses\": %d", &s->boosts.specialAttack);
-  sscanf(def, "\"special_defense_uses\": %d", &s->boosts.specialDefense);
+    sscanf(atk, "\"special_attack_uses\": %d", &s->boosts.specialAttack);
+    sscanf(def, "\"special_defense_uses\": %d", &s->boosts.specialDefense);
 }
 
 void processBattleSetup(char *msg, BattleSetupData *s) {
@@ -274,6 +262,7 @@ void processBattleSetup(char *msg, BattleSetupData *s) {
      &s->boosts.specialDefense);
   printf("[HOST] Parsed BATTLE_SETUP: mode=%s, pokemon=%s, atk=%d, def=%d\n",
       s->communicationMode, s->pokemonName, s->boosts.specialAttack, s->boosts.specialDefense);
+  BattleManager_Init(&bm, 1, s->pokemonName);
 }
 
 // ----------------------------------------------------
@@ -324,9 +313,10 @@ void sendMessageAuto(const char *msg,
   else
     printf("[JOINER] Unicast message sent.\n");
 }
-void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_len, BattleSetupData *setup) {
+void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_len, BattleSetupData *setup, BattleSetupData *host_setup, char peer_pokemon[64]) {
   char *type = get_message_type(msg);
   if (!type) return;
+  printf("Type: %s\n",type);
   printf("========================================\n");
   // HANDSHAKE_RESPONSE
   if (!strncmp(type, "HANDSHAKE_RESPONSE", strlen("HANDSHAKE_RESPONSE"))) {
@@ -346,17 +336,13 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
   }
   // BATTLE_SETUP
   else if (!strncmp(type, "BATTLE_SETUP", strlen("BATTLE_SETUP"))) {
-    BattleSetupData host_setup;
-    processBattleSetup(msg, &host_setup);
+    processBattleSetup(msg, host_setup);
     printf("[JOINER] Received BATTLE_SETUP from host.\n");
     
     if(!battle_manager_initialized){
-    BattleManager_Init(&bm, 0, setup->pokemonName);
+    BattleManager_Init(&bm, 0, host_setup->pokemonName);
 
     battle_manager_initialized = true;
-
-    // FIX 3: Pass address of broadcast_recv_addr (which holds peer address)
-    processBattleMessage(msg, setup, broadcast_recv_addr, fromLen);
   }
   }
   // CHAT_MESSAGE
@@ -371,25 +357,23 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
     VERBOSE_MODE = false;
     printf("\n[SYSTEM] Verbose mode disabled\n");
   }
-  else if (!strcmp(type,"ATTACK_ANNOUNCE")){
-    BattleManager_HandleIncoming(&bm,type);
+  else if (!strncmp(type,"ATTACK_ANNOUNCE",strlen("ATTACK_ANNOUNCE"))){
+    handle_attack_announce(&bm,msg);
   }
-  else if (!strcmp(type,"DEFENSE_ANNOUNCE")){
-    BattleManager_HandleIncoming(&bm,type);
+  else if (!strncmp(type,"DEFENSE_ANNOUNCE",strlen("DEFENSE_ANNOUNCE"))){
+    handle_defense_announce(&bm, msg,peer_pokemon);
   }
-  else if (!strcmp(type,"CALCULATION_REPORT")){
-    BattleManager_HandleIncoming(&bm,type);
+  else if (!strncmp(type,"CALCULATION_REPORT",strlen("CALCULATION_REPORT"))){
+    handle_calculation_report(&bm, msg);
   }
-  else if (!strcmp(type,"CALCULATION_CONFIRM")){
-    BattleManager_HandleIncoming(&bm,type);
+  else if (!strncmp(type,"CALCULATION_CONFIRM",strlen("CALCULATION_CONFIRM"))){
+    handle_calculation_confirm(&bm, msg);
   }
-  else if (!strcmp(type,"RESOLUTION_REQUEST")){
-    BattleManager_HandleIncoming(&bm,type);
+  else if (!strncmp(type,"RESOLUTION_REQUEST",strlen("RESOLUTION_REQUEST"))){
+    handle_resolution_request(&bm, msg);
   }
-  else if (!strcmp(type,"GAME_OVER")){
-    BattleManager_HandleIncoming(&bm,type);
-    is_game_over = true;
-    printf("[JOINER] Game Over received.\n");
+  else if (!strncmp(type,"GAME_OVER",strlen("GAME_OVER"))){
+    handle_game_over(&bm, msg);
   }
   else{
       printf("Message: %s\n", type);
@@ -585,7 +569,7 @@ int main() {
           hostAddr = broadcast_recv_addr;
           hostAddr.sin_port = htons(9002); // Assuming host listens on 9002
         }
-        processReceivedMessage(receive, &broadcast_recv_addr, fromLen, &setup);
+        processReceivedMessage(receive, &broadcast_recv_addr, fromLen, &setup,&host_setup,host_setup.pokemonName);
       }
     }
 
@@ -639,36 +623,19 @@ int main() {
           battle_setup_received = true;
           printf("[JOINER] Sent BATTLE_SETUP.\n");
         }
-        else if (battle_manager_initialized && bm.ctx.isMyTurn &&
-            bm.ctx.currentState == STATE_WAITING_FOR_MOVE) {
-
-          BattleManager_HandleUserInput(&bm, input);
-
-          const char *out = BattleManager_GetOutgoingMessage(&bm);
-          if (out && strlen(out) > 0) {
-            // FIX 4: Pass address of hostAddr
-            sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
-            BattleManager_ClearOutgoingMessage(&bm);
-          }
-        }
-        
-        if (!strcmp(input, "ATTACK_ANNOUNCE")) {
-          if (!battle_manager_initialized) {
-              printf("[JOINER] BattleManager not initialized yet. Wait for BATTLE_SETUP from host.\n");
-          } else {
-              char moveName[128];
-              printf("Move name: ");
-              if (fgets(moveName, sizeof(moveName), stdin)) {
-                clean_newline(moveName);
-                if (strlen(moveName) == 0) {
-                    printf("[JOINER] No move entered. Skipping.\n");
-                } else {
-                    BattleManager_HandleUserInput(&bm, moveName);
-                    const char *out = BattleManager_GetOutgoingMessage(&bm);
-                    if (out && strlen(out) > 0) {
-                        sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
-                        BattleManager_ClearOutgoingMessage(&bm);
-                    }
+        else if (!strcmp(input, "ATTACK_ANNOUNCE")) {
+          char moveName[128];
+          printf("Move name: ");
+          if (fgets(moveName, sizeof(moveName), stdin)) {
+            clean_newline(moveName);
+            if (strlen(moveName) == 0) {
+                printf("[JOINER] No move entered. Skipping.\n");
+            } else {
+                BattleManager_HandleUserInput(&bm, moveName);
+                const char *out = BattleManager_GetOutgoingMessage(&bm);
+                if (out && strlen(out) > 0) {
+                    sendMessageAuto(out, &hostAddr, sizeof(hostAddr), setup, false);
+                    BattleManager_ClearOutgoingMessage(&bm);
                 }
             }
           }
@@ -777,22 +744,9 @@ int main() {
         }
       }
       else{
-        if (!fgets(input, sizeof(input), stdin)) continue;
-          clean_newline(input);
-        
-        if(!strncmp(input,"CHAT_MESSAGE",strlen("CHAT_MESSAGE"))){
-          // FIX 4: Pass address of hostAddr is done inside the function now
-          inputChatMessage(outbuf, setup, hostAddr, sizeof(hostAddr));
-        }
-        else if(strncmp(input,"CHAT_MESSAGE",strlen("CHAT_MESSAGE")))
-        {
-          printf("[SPECTATOR] cannot access %s command.\n",input);
-        }
-        else{
-          printf("[SPECTATOR] Unknown command.\n");
-        }
-      }
+      } 
     }
+  
   }
 
   closesocket(socket_network);

@@ -40,13 +40,16 @@ typedef struct {
     char outgoingBuffer[BM_MAX_MSG_SIZE]; // buffer for messages to send
 } BattleManager;
 
-
+void handle_attack_announce(BattleManager *bm, const char *msg);
+void handle_defense_announce(BattleManager *bm, const char *msg, char name[64]);
+void handle_calculation_report(BattleManager *bm, const char *msg);
+void handle_calculation_confirm(BattleManager *bm, const char *msg);  
+void handle_game_over(BattleManager *bm, const char *msg);
+void handle_resolution_request(BattleManager *bm, const char *msg);
 
 // Initialize BattleManager (Host = 1, Joiner = 0)
 void BattleManager_Init(BattleManager *bm, int isHost, const char *myPokeName);
 
-// Handle incoming PokeProtocol messages
-void BattleManager_HandleIncoming(BattleManager *bm, const char *msg);
 
 // Handle user input (move names)
 void BattleManager_HandleUserInput(BattleManager *bm, const char *input);

@@ -14,10 +14,11 @@
 // #include "game_logic.h"
 #pragma comment(lib, "Ws2_32.lib")
 #include "BattleManager.h"
+#include "pokemon_data.h"
 #define MAXBUF 4096
 #define HOST_PORT 9006
 #define BROADCAST_IP "255.255.255.255"
-
+bool battle_manager_initialized = false;
 
 #define MAX_SPECTATORS 10 
 
@@ -33,7 +34,6 @@ typedef struct {
         int specialAttack;
         int specialDefense;
     } boosts;
-    Pokemon *pokemonData;
 } BattleSetupData;
 
 static const char b64_table[] =
@@ -181,7 +181,7 @@ void processChatMessage(char *msg) {
     }
 }
 
-void processBattleSetup(char *msg, BattleSetupData *out) {
+void processBattleSetup(char *msg, BattleSetupData *out, BattleManager bm) {
     char *p;
     p = strstr(msg, "communication_mode: ");
     if (p) sscanf(p, "communication_mode: %31[^\n]", out->communicationMode);
@@ -193,6 +193,8 @@ void processBattleSetup(char *msg, BattleSetupData *out) {
     if (p) sscanf(p, "\"special_defense_uses\": %d", &out->boosts.specialDefense);
     printf("[HOST] Parsed BATTLE_SETUP: mode=%s, pokemon=%s, atk=%d, def=%d\n",
            out->communicationMode, out->pokemonName, out->boosts.specialAttack, out->boosts.specialDefense);
+    BattleManager_Init(&bm, 1, out->pokemonName);
+    battle_manager_initialized = true;
 }
 
 /* ---------------- sending helpers ---------------- */
@@ -252,7 +254,7 @@ int main(void) {
     BattleSetupData peer_setup;
 
     BattleManager bm;
-    BattleManager_Init(&bm, 1, my_setup.pokemonName);
+    
 
     // BattleSetupData spectator[10];
     // int spectator_count = 0;
@@ -356,7 +358,7 @@ int main(void) {
                 else if (!strncmp(mt, "BATTLE_SETUP", strlen("BATTLE_SETUP"))) {
                     printf("[HOST] Received BATTLE_SETUP from %s:%d\n%s\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port), recvbuf);
                     // parse joiner's setup into peer_setup
-                    processBattleSetup(recvbuf, &peer_setup);
+                    processBattleSetup(recvbuf, &peer_setup,bm);
                     sprintf(recvbuf,
                         "message_type: BATTLE_SETUP\n"
                         "communication_mode: %s\n"
@@ -368,24 +370,22 @@ int main(void) {
                     is_battle_started = true;
                 }
                 else if (!strcmp(mt, "ATTACK_ANNOUNCE")) {
-                    BattleManager_HandleIncoming(&bm, recvbuf);
+                    handle_attack_announce(&bm,recvbuf);
                 }
                 else if (!strcmp(mt, "DEFENSE_ANNOUNCE")) {
-                    BattleManager_HandleIncoming(&bm, recvbuf);
+                    handle_defense_announce(&bm, recvbuf,peer_setup.pokemonName);
                 }
                 else if (!strcmp(mt, "CALCULATION_REPORT")) {
-                    BattleManager_HandleIncoming(&bm, recvbuf);
+                    handle_calculation_report(&bm, recvbuf);
                 }
                 else if (!strcmp(mt, "CALCULATION_CONFIRM")) {
-                    BattleManager_HandleIncoming(&bm, recvbuf);
+                    handle_calculation_confirm(&bm, recvbuf);
                 }
                 else if (!strcmp(mt, "RESOLUTION_REQUEST")) {
-                    BattleManager_HandleIncoming(&bm, recvbuf);
+                    handle_resolution_request(&bm, recvbuf);
                 }
                 else if (!strcmp(mt, "GAME_OVER")) {
-                    BattleManager_HandleIncoming(&bm, recvbuf);
-                    is_game_over = true;
-                    printf("[HOST] Game Over received.\n");
+                    handle_game_over(&bm, recvbuf);
                 }
 
                 else if (!strncmp(mt, "CHAT_MESSAGE", strlen("CHAT_MESSAGE"))) {
@@ -401,21 +401,7 @@ int main(void) {
                     printf("\n[SYSTEM] Verbose mode disabled.\n");
                 }
                 else {
-                
-                    // BattleManager will parse and possibly generate an outgoing message
-                    if (battlemanager_initialized) {
-                        printf("[HOST] Processing battle message!\n");
-                        BattleManager_HandleIncoming(&bm, recvbuf);
-                        const char *out = BattleManager_GetOutgoingMessage(&bm);
-                        if (out && strlen(out) > 0) {
-                            sendMessageAuto(out, last_peer, last_peer_len, my_setup, false);
-                            BattleManager_ClearOutgoingMessage(&bm);
-                        }
-                    }
-                    else {
-                        // other messages
-                        printf("[HOST] Received message from %s:%d -> %s\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port), recvbuf);
-                    }
+                    printf("Message: %s\n",recvbuf);
                 }
             }
         }
