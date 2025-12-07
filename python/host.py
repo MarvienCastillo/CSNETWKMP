@@ -1,240 +1,186 @@
-import random
+import socket
 import threading
-import time
+import json
+import random
+from pokemon_data import load_pokemon_csv, get_pokemon_by_name
 
-from network import ReliableUDP
-from messages import serialize_message, deserialize_message
-from pokemon_data import load_pokemon_csv, get_pokemon
-from battle_manager import BattleManager
-from chat import create_text_message, create_sticker_message
-
-from chat import create_text_message, create_sticker_message
-from messages import serialize_message
-peer_address = ("127.0.0.1", 9002)  # Joiner IP for host; host IP for joiner
-
-sequence_number = 0
-
-def input_loop():
-    global sequence_number
-    while True:
-        user_input = input()
-        if user_input.startswith("/chat "):
-            msg = create_text_message("Me", user_input[6:], sequence_number)
-        elif user_input.startswith("/sticker "):
-            msg = create_sticker_message("Me", user_input[9:], sequence_number)
-        else:
-            print("Use /chat <message> or /sticker <filepath>")
-            continue
-
-        ReliableUDP.send_message(serialize_message(msg), peer_address)
-        sequence_number += 1
-
-threading.Thread(target=input_loop, daemon=True).start()
-
-from chat import save_sticker_message
-from messages import deserialize_message
-
-def receive_loop():
-    while True:
-        data, addr = ReliableUDP.receive_message()
-        msg = deserialize_message(data)
-        if msg["message_type"] == "CHAT_MESSAGE":
-            if msg["content_type"] == "TEXT":
-                print(f"[CHAT {msg['sender_name']}] {msg['message_text']}")
-            elif msg["content_type"] == "STICKER":
-                path = save_sticker_message(msg)
-                print(f"[CHAT {msg['sender_name']}] Sent a sticker! Saved as {path}")
-        else:
-            print(f"[RECEIVED] {msg}")
-
-threading.Thread(target=receive_loop, daemon=True).start()
-
-# ==============================
-# Configuration
-# ==============================
-HOST_IP = "0.0.0.0"
 HOST_PORT = 9002
-VERBOSE = True
-POKEMON_CSV = "pokemon.csv"  # your CSV file path
+pokemons = load_pokemon_csv("pokemon.csv")
 
-load_pokemon_csv(POKEMON_CSV)
+joiners = {}       # addr -> info
+spectators = {}    # addr -> info
 
-# ==============================
-# Networking setup
-# ==============================
-host = ReliableUDP(HOST_IP, HOST_PORT, verbose=VERBOSE)
-print(f"[HOST] Listening on {HOST_IP}:{HOST_PORT}")
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind(('', HOST_PORT))
+print(f"[HOST] Listening on port {HOST_PORT}...")
 
-# ==============================
-# Handshake with Joiner
-# ==============================
-data, addr = host.receive_message()
-msg = deserialize_message(data)
-if msg['message_type'] == "HANDSHAKE_REQUEST":
-    seed = random.randint(1, 999999)
-    handshake_response = serialize_message({
-        "message_type": "HANDSHAKE_RESPONSE",
-        "seed": seed
-    })
-    host.send_message(handshake_response, addr)
-    print(f"[HOST] Handshake completed with {addr}, seed={seed}")
-else:
-    print("[HOST] Unexpected message during handshake")
-    exit(1)
+# ------------------------
+# BattleManager
+# ------------------------
+class BattleManager:
+    def __init__(self):
+        self.battles = {}  # addr -> battle_state
 
-# ==============================
-# BATTLE_SETUP
-# ==============================
-my_pokemon_name = input("Choose your Pokémon: ")
-my_pokemon = get_pokemon(my_pokemon_name)
-my_boosts = {"special_attack_uses": 5, "special_defense_uses": 5}
+    def setup_battle(self, addr, pokemon, boosts, mode):
+        self.battles[addr] = {
+            "pokemon": pokemon,
+            "boosts": boosts,
+            "mode": mode,
+            "turn": 0
+        }
 
-battle_setup = serialize_message({
-    "message_type": "BATTLE_SETUP",
-    "communication_mode": "P2P",
-    "pokemon_name": my_pokemon_name,
-    "stat_boosts": my_boosts
-})
-host.send_message(battle_setup, addr)
+    def process_action(self, addr, action):
+        battle = self.battles.get(addr)
+        if not battle:
+            print(f"[BATTLE] No battle for {addr}")
+            return
+        # Example: increment turn
+        battle["turn"] += 1
+        print(f"[BATTLE][{addr}] Turn {battle['turn']}, Action={action}")
 
-# Wait for Joiner's setup
-data, _ = host.receive_message()
-joiner_setup = deserialize_message(data)
-joiner_pokemon_name = joiner_setup['pokemon_name']
-joiner_pokemon = get_pokemon(joiner_pokemon_name)
-joiner_boosts = joiner_setup['stat_boosts']
+    def show_battle(self, addr):
+        battle = self.battles.get(addr)
+        if not battle:
+            print(f"[BATTLE] No battle for {addr}")
+            return
+        print(f"[BATTLE][{addr}] Pokémon={battle['pokemon'].name}, Mode={battle['mode']}, Boosts={battle['boosts']}, Turn={battle['turn']}")
 
-# ==============================
-# Initialize Battle Manager
-# ==============================
-battle = BattleManager(my_pokemon, joiner_pokemon, my_boosts, joiner_boosts, seed=seed)
-turn_owner = "host"  # host goes first
+battle_manager = BattleManager()
 
-# ==============================
-# Async chat listener
-# ==============================
-def listen_for_chat():
+# ------------------------
+# Listener
+# ------------------------
+def listen():
     while True:
-        data, _ = host.receive_message()
-        msg = deserialize_message(data)
-        if msg['message_type'] == "CHAT_MESSAGE":
-            if msg['content_type'] == "TEXT":
-                print(f"[CHAT {msg['sender_name']}] {msg['message_text']}")
-            elif msg['content_type'] == "STICKER":
-                print(f"[CHAT {msg['sender_name']}] Sent a sticker! (length={len(msg['sticker_data'])} bytes)")
+        try:
+            data, addr = sock.recvfrom(4096)
+            msg = data.decode('utf-8').strip()
+            if not msg:
+                continue
+            process_message(msg, addr)
+        except Exception as e:
+            print(f"[ERROR] Listening thread: {e}")
 
-threading.Thread(target=listen_for_chat, daemon=True).start()
+# ------------------------
+# Process message
+# ------------------------
+def process_message(msg, addr):
+    lines = msg.splitlines()
+    msg_type = next((line.split(":",1)[1].strip() for line in lines if line.startswith("message_type:")), None)
+    if not msg_type:
+        print(f"[HOST] Unknown message from {addr}: {msg}")
+        return
 
-# ==============================
-# Turn-based battle loop
-# ==============================
-sequence_number = 1
-while battle.p1.hp > 0 and battle.p2.hp > 0:
-    if turn_owner == "host":
-        move_name = input("Your move: ")
-        move_power = int(input("Move power: "))
-        move_category = input("Move category (physical/special): ")
+    if msg_type == "HANDSHAKE_REQUEST":
+        seed = random.randint(0, 999999)
+        sock.sendto(f"message_type: HANDSHAKE_RESPONSE\nseed: {seed}\n".encode('utf-8'), addr)
+        joiners[addr] = {"seed": seed, "battle_setup_done": False}
+        print(f"[HOST] Handshake with {addr}, seed={seed}")
 
-        # ATTACK_ANNOUNCE
-        attack_msg = serialize_message({
-            "message_type": "ATTACK_ANNOUNCE",
-            "move_name": move_name,
-            "sequence_number": sequence_number
-        })
-        host.send_message(attack_msg, addr)
-        sequence_number += 1
+    elif msg_type == "SPECTATOR_REQUEST":
+        spectators[addr] = {"registered": True}
+        sock.sendto("message_type: SPECTATOR_RESPONSE\n".encode('utf-8'), addr)
+        print(f"[HOST] Spectator registered: {addr}")
 
-        # DEFENSE_ANNOUNCE
-        data, _ = host.receive_message()
-        defense_msg = deserialize_message(data)
-        if defense_msg['message_type'] != "DEFENSE_ANNOUNCE":
-            print("[ERROR] Expected DEFENSE_ANNOUNCE")
-            exit(1)
+    elif msg_type == "BATTLE_SETUP":
+        try:
+            comm_mode = next(line.split(":",1)[1].strip() for line in lines if line.startswith("communication_mode:"))
+            pokemon_name = next(line.split(":",1)[1].strip() for line in lines if line.startswith("pokemon_name:"))
+            boosts = json.loads(next(line.split(":",1)[1].strip() for line in lines if line.startswith("stat_boosts:")))
 
-        # PROCESS TURN
-        dmg = battle.apply_attack(battle.p1, battle.p2, move_power, move_category, battle.boosts1)
+            pokemon = get_pokemon_by_name(pokemons, pokemon_name)
+            if not pokemon:
+                print(f"[HOST] Unknown Pokémon {pokemon_name} from {addr}")
+                return
 
-        # CALCULATION_REPORT
-        report_msg = serialize_message({
-            "message_type": "CALCULATION_REPORT",
-            "attacker": battle.p1.name,
-            "move_used": move_name,
-            "remaining_health": battle.p1.hp,
-            "damage_dealt": dmg,
-            "defender_hp_remaining": battle.p2.hp,
-            "status_message": f"{battle.p1.name} used {move_name}!",
-            "sequence_number": sequence_number
-        })
-        host.send_message(report_msg, addr)
-        sequence_number += 1
+            joiners[addr].update({
+                "battle_setup_done": True,
+                "pokemon": pokemon,
+                "communication_mode": comm_mode,
+                "boosts": boosts
+            })
 
-        # Wait for CALCULATION_CONFIRM
-        data, _ = host.receive_message()
-        confirm_msg = deserialize_message(data)
-        if confirm_msg['message_type'] != "CALCULATION_CONFIRM":
-            print("[ERROR] Expected CALCULATION_CONFIRM")
-            exit(1)
+            battle_manager.setup_battle(addr, pokemon, boosts, comm_mode)
+            print(f"[HOST] Battle setup from {addr}: Pokémon={pokemon.name}, mode={comm_mode}, boosts={boosts}")
+            battle_manager.show_battle(addr)
+        except Exception as e:
+            print(f"[HOST] Failed to parse BATTLE_SETUP: {e}")
 
-        turn_owner = "joiner"
+    elif msg_type == "BATTLE_ACTION":
+        try:
+            action_line = next(line.split(":",1)[1].strip() for line in lines if line.startswith("action:"))
+            battle_manager.process_action(addr, action_line)
+        except:
+            print(f"[HOST] Failed to parse BATTLE_ACTION from {addr}")
+
+    elif msg_type == "CHAT_MESSAGE":
+        sender_name = next((line.split(":",1)[1].strip() for line in lines if line.startswith("sender_name:")), "Unknown")
+        text = next((line.split(":",1)[1].strip() for line in lines if line.startswith("message_text:")), "")
+        print(f"[CHAT][{sender_name}]: {text}")
+
     else:
-        # WAIT FOR JOINER ATTACK
-        data, _ = host.receive_message()
-        attack_msg = deserialize_message(data)
-        if attack_msg['message_type'] != "ATTACK_ANNOUNCE":
-            print("[ERROR] Expected ATTACK_ANNOUNCE")
-            exit(1)
+        print(f"[HOST] Unknown message_type {msg_type} from {addr}")
 
-        # Send DEFENSE_ANNOUNCE
-        defense_msg = serialize_message({
-            "message_type": "DEFENSE_ANNOUNCE",
-            "sequence_number": sequence_number
-        })
-        host.send_message(defense_msg, addr)
-        sequence_number += 1
+# ------------------------
+# User input
+# ------------------------
+def user_input_loop():
+    while True:
+        cmd = input("> ").strip()
+        if cmd.startswith("CHAT "):
+            text = cmd[len("CHAT "):]
+            msg = f"message_type: CHAT_MESSAGE\nsender_name: HOST\ncontent_type: TEXT\nmessage_text: {text}\n"
+            for addr in list(joiners.keys()) + list(spectators.keys()):
+                sock.sendto(msg.encode('utf-8'), addr)
 
-        # PROCESS TURN
-        move_name = attack_msg['move_name']
-        move_power = int(input(f"Opponent move power (for testing, enter 1-100): "))
-        move_category = input(f"Opponent move category (physical/special): ")
-        dmg = battle.apply_attack(battle.p2, battle.p1, move_power, move_category, battle.boosts2)
+        elif cmd == "BATTLE_SETUP":
+            # Let host choose Pokémon and mode
+            pokemon_name = input("pokemon_name: ").strip()
+            pokemon = get_pokemon_by_name(pokemons, pokemon_name)
+            if not pokemon:
+                print("[HOST] Pokémon not found")
+                continue
+            mode = input("communication_mode (P2P/BROADCAST): ").strip()
+            try:
+                atk_uses = int(input("special_attack_uses: "))
+                def_uses = int(input("special_defense_uses: "))
+            except:
+                atk_uses, def_uses = 4,3
+            boosts = {"special_attack_uses": atk_uses, "special_defense_uses": def_uses}
 
-        # CALCULATION_REPORT
-        report_msg = serialize_message({
-            "message_type": "CALCULATION_REPORT",
-            "attacker": battle.p2.name,
-            "move_used": move_name,
-            "remaining_health": battle.p2.hp,
-            "damage_dealt": dmg,
-            "defender_hp_remaining": battle.p1.hp,
-            "status_message": f"{battle.p2.name} used {move_name}!",
-            "sequence_number": sequence_number
-        })
-        host.send_message(report_msg, addr)
-        sequence_number += 1
+            # Setup own battle
+            host_addr = ("HOST", 0)
+            battle_manager.setup_battle(host_addr, pokemon, boosts, mode)
+            print(f"[HOST] Battle setup complete: Pokémon={pokemon.name}, mode={mode}, boosts={boosts}")
 
-        # Send CALCULATION_CONFIRM
-        confirm_msg = serialize_message({
-            "message_type": "CALCULATION_CONFIRM",
-            "sequence_number": sequence_number
-        })
-        host.send_message(confirm_msg, addr)
-        sequence_number += 1
+        elif cmd.startswith("battle_action "):
+            action = cmd[len("battle_action "):]
+            host_addr = ("HOST", 0)
+            battle_manager.process_action(host_addr, action)
+            # Broadcast to joiners/spectators
+            msg = f"message_type: BATTLE_ACTION\naction: {action}\n"
+            for addr in list(joiners.keys()) + list(spectators.keys()):
+                sock.sendto(msg.encode('utf-8'), addr)
 
-        turn_owner = "host"
+        elif cmd == "list_joiners":
+            print(f"[HOST] Joiners: {joiners}")
+        elif cmd == "list_spectators":
+            print(f"[HOST] Spectators: {spectators}")
+        elif cmd.startswith("battle_show "):
+            ip, port = cmd[len("battle_show "):].split(":")
+            addr = (ip.strip(), int(port.strip()))
+            battle_manager.show_battle(addr)
+        elif cmd == "exit":
+            break
+        else:
+            print("[HOST] Unknown command")
 
-# ==============================
-# GAME_OVER
-# ==============================
-if battle.p1.hp <= 0:
-    winner, loser = battle.p2.name, battle.p1.name
-else:
-    winner, loser = battle.p1.name, battle.p2.name
+# ------------------------
+# Main
+# ------------------------
+def main():
+    threading.Thread(target=listen, daemon=True).start()
+    threading.Thread(target=user_input_loop).start()
 
-game_over_msg = serialize_message({
-    "message_type": "GAME_OVER",
-    "winner": winner,
-    "loser": loser,
-    "sequence_number": sequence_number
-})
-host.send_message(game_over_msg, addr)
-print(f"[GAME OVER] Winner: {winner}, Loser: {loser}")
+if __name__ == "__main__":
+    main()
