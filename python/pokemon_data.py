@@ -29,7 +29,7 @@ def parse_abilities_string(abilities_str):
 
 # --- Pokemon Class ---
 class Pokemon:
-    def __init__(self, name, type1, type2, hp, attack, defense, sp_attack, sp_defense, abilities, movelist):
+    def __init__(self, name, type1, type2, hp, attack, defense, sp_attack, sp_defense, abilities):
         self.name = name
         self.type1 = type1
         self.type2 = type2
