@@ -3,6 +3,8 @@ import socket
 import threading
 import json
 import sys
+import os
+import base64
 from pokemon_data import load_pokemon_csv, get_pokemon_by_name, MOVES, get_type_effectiveness
 
 HOST_IP = "127.0.0.1"
@@ -16,15 +18,19 @@ host_addr = (HOST_IP, HOST_PORT)
 handshake_done = False
 battle_setup_done = False
 battle_mode = None
-sequence_number = 0
 allow_attack_input = False
+sequence_number = 0
+verbose = True
+
+MAX_UDP_SIZE = 60000  # for sticker chunking
+received_stickers = {}  # filename -> list of chunks
 
 # ------------------------
 # BattleManager
 # ------------------------
 class BattleManager:
     def __init__(self):
-        self.battles = {}  # "HOST" or "JOINER"
+        self.battles = {}
 
     def setup_battle(self, key, pokemon, boosts, mode):
         self.battles[key] = {
@@ -46,24 +52,19 @@ class BattleManager:
 
     def calculate_damage(self, attacker, defender, move_name):
         move = MOVES.get(move_name.lower(), {"power": 1.0, "type": "Normal", "category": "physical"})
-
         if move["category"] == "physical":
             atk_stat = attacker["pokemon"].attack
             def_stat = defender["pokemon"].defense
         else:
             atk_stat = attacker["pokemon"].sp_attack
             def_stat = defender["pokemon"].sp_defense
-
         base_power = move.get("power", 1.0)
-
         type1_effect = get_type_effectiveness(move["type"], defender["pokemon"].type1)
         type2_effect = 1.0
         if defender["pokemon"].type2:
             type2_effect = get_type_effectiveness(move["type"], defender["pokemon"].type2)
-
         type_multiplier = type1_effect * type2_effect
         damage = max(1, int((atk_stat / max(1, def_stat)) * base_power * type_multiplier))
-
         status_message = f"{attacker['pokemon'].name} used {move_name}!"
         if type_multiplier > 1.0:
             status_message += " It was super effective!"
@@ -71,7 +72,6 @@ class BattleManager:
             status_message += " It was not very effective."
         elif type_multiplier == 0:
             status_message += " It had no effect!"
-
         return damage, status_message
 
     def process_attack(self, attacker_key, defender_key, move_name):
@@ -79,26 +79,48 @@ class BattleManager:
         defender = self.battles.get(defender_key)
         if not attacker or not defender or attacker["battle_over"] or defender["battle_over"]:
             return 0, "Battle is over"
-
         damage, status_message = self.calculate_damage(attacker, defender, move_name)
-
-        # Apply damage
         defender["hp"] -= damage
         attacker["turn"] += 1
-
-        # Switch turn
         attacker["current_player"] = "JOINER" if attacker["current_player"] == "HOST" else "HOST"
         defender["current_player"] = "JOINER" if defender["current_player"] == "HOST" else "HOST"
-
-        # Battle over check
         if defender["hp"] <= 0:
             defender["hp"] = 0
             defender["battle_over"] = True
             status_message += f" {defender['pokemon'].name} fainted! {attacker['pokemon'].name} wins!"
-
         return damage, status_message
 
 battle_manager = BattleManager()
+
+# ------------------------
+# Utilities
+# ------------------------
+def toggle_verbose(cmd):
+    global verbose
+    verbose = cmd == "VERBOSE_ON"
+    print(f"[JOINER] Verbose mode {'ON' if verbose else 'OFF'}")
+
+def send_ack(seq):
+    ack_msg = json.dumps({"message_type": "ACK", "sequence_number": seq})
+    sock.sendto(ack_msg.encode(), host_addr)
+    if verbose:
+        print(f"[ACK SENT] seq={seq}")
+
+def handle_sticker_message(msg):
+    fname = msg["filename"]
+    chunk_no = msg["chunk_number"]
+    total = msg["total_chunks"]
+    data = msg["sticker_data"]
+    if fname not in received_stickers:
+        received_stickers[fname] = [None]*total
+    received_stickers[fname][chunk_no-1] = data
+    if all(received_stickers[fname]):
+        os.makedirs("stickers", exist_ok=True)
+        full_data = "".join(received_stickers[fname])
+        with open(f"stickers/{fname}", "wb") as f:
+            f.write(base64.b64decode(full_data))
+        print(f"[CHAT] Sticker saved as stickers/{fname}")
+        del received_stickers[fname]
 
 # ------------------------
 # Listener
@@ -108,27 +130,33 @@ def listen():
     while True:
         try:
             data, addr = sock.recvfrom(65536)
-            msg = data.decode('utf-8').strip()
-            if not msg: continue
-            process_message(msg, addr)
+            msg_raw = data.decode('utf-8').strip()
+            if not msg_raw: continue
+            process_message(msg_raw, addr)
         except Exception as e:
             print(f"[ERROR] Listening: {e}")
 
-def process_message(msg, addr):
+def process_message(msg_raw, addr):
     global handshake_done, battle_setup_done, battle_mode, allow_attack_input, sequence_number
-    lines = msg.splitlines()
-    msg_type = next((l.split(":",1)[1].strip() for l in lines if l.startswith("message_type:")), None)
+    try:
+        msg = json.loads(msg_raw)
+    except:
+        lines = msg_raw.splitlines()
+        msg_type = next((l.split(":",1)[1].strip() for l in lines if l.startswith("message_type:")), None)
+        msg = {"message_type": msg_type, **{l.split(":",1)[0]: l.split(":",1)[1].strip() for l in lines if ":" in l}}
+
+    msg_type = msg.get("message_type")
     if not msg_type: return
 
     if msg_type == "HANDSHAKE_RESPONSE":
-        seed = int(next(l.split(":",1)[1].strip() for l in lines if l.startswith("seed:")))
+        seed = int(msg.get("seed", 0))
         handshake_done = True
         print(f"[from HOST: HANDSHAKE_RESPONSE] Handshake done, seed={seed}")
 
     elif msg_type == "BATTLE_SETUP":
-        comm_mode = next(l.split(":",1)[1].strip() for l in lines if l.startswith("communication_mode:"))
-        pokemon_name = next(l.split(":",1)[1].strip() for l in lines if l.startswith("pokemon_name:"))
-        boosts = json.loads(next(l.split(":",1)[1].strip() for l in lines if l.startswith("stat_boosts:")))
+        comm_mode = msg.get("communication_mode")
+        pokemon_name = msg.get("pokemon_name")
+        boosts = json.loads(msg.get("stat_boosts", "{}"))
         pokemon = get_pokemon_by_name(pokemons, pokemon_name)
         battle_manager.setup_battle("HOST", pokemon, boosts, comm_mode)
         battle_mode = comm_mode
@@ -137,46 +165,42 @@ def process_message(msg, addr):
         print(f"[from HOST] Received host's setup: Pokémon={pokemon.name}, mode={comm_mode}")
 
     elif msg_type == "ATTACK_ANNOUNCE":
-        move_type = next(l.split(":",1)[1].strip() for l in lines if l.startswith("move_type:"))
-        print(f"[BATTLE] ATTACK_ANNOUNCE from host: {move_type}")
-        sock.sendto("message_type: DEFENSE_ANNOUNCE\n".encode(), host_addr)
-
-        if "JOINER" in battle_manager.battles:
-            damage, status_message = battle_manager.process_attack("HOST","JOINER",move_type)
-
-            # Send CALCULATION_REPORT
-            sequence_number += 1
-            report = (
-                f"message_type: CALCULATION_REPORT\n"
-                f"attacker: {battle_manager.battles['HOST']['pokemon'].name}\n"
-                f"move_used: {move_type}\n"
-                f"remaining_health: {battle_manager.battles['HOST']['hp']}\n"
-                f"damage_dealt: {damage}\n"
-                f"defender_hp_remaining: {battle_manager.battles['JOINER']['hp']}\n"
-                f"status_message: {status_message}\n"
-                f"sequence_number: {sequence_number}\n"
-            )
-            sock.sendto(report.encode(), host_addr)
-
-            if battle_manager.battles["JOINER"]["battle_over"]:
-                print("[JOINER] Battle over! Winner:", battle_manager.battles["HOST"]["pokemon"].name)
-                allow_attack_input = False
-                threading.Timer(5.0, lambda: sys.exit(0)).start()
+        move_type = msg.get("move_type")
+        print(f"[BATTLE] ATTACK_ANNOUNCE from HOST: {move_type}")
+        damage, status_message = battle_manager.process_attack("HOST","JOINER",move_type)
+        sequence_number += 1
+        report = {
+            "message_type": "CALCULATION_REPORT",
+            "attacker": battle_manager.battles["HOST"]["pokemon"].name,
+            "move_used": move_type,
+            "remaining_health": battle_manager.battles["HOST"]["hp"],
+            "damage_dealt": damage,
+            "defender_hp_remaining": battle_manager.battles["JOINER"]["hp"],
+            "status_message": status_message,
+            "sequence_number": sequence_number
+        }
+        sock.sendto(json.dumps(report).encode(), host_addr)
+        allow_attack_input = True
 
     elif msg_type == "CALCULATION_REPORT":
-        # Confirm calculation
-        sequence_number += 1
-        confirm = f"message_type: CALCULATION_CONFIRM\nsequence_number: {sequence_number}\n"
-        sock.sendto(confirm.encode(), host_addr)
         print(f"[CALCULATION REPORT from HOST]\n{msg}")
-
-    elif msg_type == "RESOLUTION_REQUEST":
-        print(f"[RESOLUTION REQUEST from HOST]\n{msg}")
+        seq = msg.get("sequence_number")
+        if seq:
+            send_ack(seq)
 
     elif msg_type == "CHAT_MESSAGE":
-        sender = next(l.split(":",1)[1].strip() for l in lines if l.startswith("sender_name:"))
-        text = next(l.split(":",1)[1].strip() for l in lines if l.startswith("message_text:"))
-        print(f"[CHAT from {sender}]: {text}")
+        if msg.get("content_type") == "STICKER":
+            handle_sticker_message(msg)
+        else:
+            sender = msg.get("sender_name")
+            text = msg.get("message_text")
+            print(f"[CHAT from {sender}]: {text}")
+        seq = msg.get("sequence_number")
+        if seq:
+            send_ack(seq)
+
+    elif msg_type == "ACK" and verbose:
+        print(f"[ACK RECEIVED] seq={msg.get('sequence_number')}")
 
     else:
         print(f"[JOINER] Unhandled message_type={msg_type}")
@@ -194,6 +218,30 @@ def prompt_boosts():
         except ValueError:
             print("Invalid input. Enter non-negative integers.")
 
+def send_sticker(addr, filename):
+    if not os.path.isfile(filename):
+        print(f"[JOINER] Sticker file not found: {filename}")
+        return
+    with open(filename, "rb") as f:
+        data = f.read()
+    b64 = base64.b64encode(data).decode()
+    chunks = [b64[i:i+MAX_UDP_SIZE] for i in range(0, len(b64), MAX_UDP_SIZE)]
+    total_chunks = len(chunks)
+    for idx, chunk in enumerate(chunks,1):
+        msg = {
+            "message_type": "CHAT_MESSAGE",
+            "sender_name": "JOINER",
+            "content_type": "STICKER",
+            "sticker_data": chunk,
+            "chunk_number": idx,
+            "total_chunks": total_chunks,
+            "filename": os.path.basename(filename),
+            "sequence_number": sequence_number+idx
+        }
+        sock.sendto(json.dumps(msg).encode(), addr)
+        if verbose:
+            print(f"[STICKER SENT] {filename} chunk {idx}/{total_chunks}")
+
 def user_input_loop():
     global handshake_done, battle_setup_done, battle_mode, allow_attack_input, sequence_number
     while True:
@@ -202,8 +250,16 @@ def user_input_loop():
         parts = cmdline.split()
         cmd = parts[0]
 
+        if cmd in ["VERBOSE_ON","VERBOSE_OFF"]:
+            toggle_verbose(cmd)
+            continue
+
         if cmd == "HANDSHAKE_REQUEST":
-            sock.sendto("message_type: HANDSHAKE_REQUEST\n".encode(), host_addr)
+            sock.sendto(json.dumps({"message_type":"HANDSHAKE_REQUEST"}).encode(), host_addr)
+            continue
+
+        if cmd == "SPECTATOR_REQUEST":
+            sock.sendto(json.dumps({"message_type":"SPECTATOR_REQUEST"}).encode(), host_addr)
             continue
 
         if cmd == "BATTLE_SETUP":
@@ -220,8 +276,13 @@ def user_input_loop():
             battle_manager.setup_battle("JOINER", pokemon, boosts, comm_mode)
             battle_setup_done = True
             allow_attack_input = True
-            msg = f"message_type: BATTLE_SETUP\ncommunication_mode: {comm_mode}\npokemon_name: {pokemon.name}\nstat_boosts: {json.dumps(boosts)}\n"
-            sock.sendto(msg.encode(), host_addr)
+            msg = {
+                "message_type": "BATTLE_SETUP",
+                "communication_mode": comm_mode,
+                "pokemon_name": pokemon.name,
+                "stat_boosts": json.dumps(boosts)
+            }
+            sock.sendto(json.dumps(msg).encode(), host_addr)
             battle_manager.show_battle("JOINER")
             continue
 
@@ -237,32 +298,33 @@ def user_input_loop():
                 continue
             move_type = parts[1].upper()
             sequence_number += 1
-            msg = f"message_type: ATTACK_ANNOUNCE\nmove_type: {move_type}\nsequence_number: {sequence_number}\n"
-            sock.sendto(msg.encode(), host_addr)
-
-            # locally apply JOINER -> HOST
-            if "HOST" in battle_manager.battles:
-                damage, status_message = battle_manager.process_attack("JOINER", "HOST", move_type)
-                # send CALCULATION_REPORT
-                sequence_number += 1
-                report = (
-                    f"message_type: CALCULATION_REPORT\n"
-                    f"attacker: {battle_manager.battles['JOINER']['pokemon'].name}\n"
-                    f"move_used: {move_type}\n"
-                    f"remaining_health: {battle_manager.battles['JOINER']['hp']}\n"
-                    f"damage_dealt: {damage}\n"
-                    f"defender_hp_remaining: {battle_manager.battles['HOST']['hp']}\n"
-                    f"status_message: {status_message}\n"
-                    f"sequence_number: {sequence_number}\n"
-                )
-                sock.sendto(report.encode(), host_addr)
-                allow_attack_input = False
+            msg = {
+                "message_type": "ATTACK_ANNOUNCE",
+                "move_type": move_type,
+                "sequence_number": sequence_number
+            }
+            sock.sendto(json.dumps(msg).encode(), host_addr)
+            allow_attack_input = False
             continue
 
         if cmd == "CHAT_MESSAGE":
             text = cmdline[len("CHAT_MESSAGE"):].strip()
-            msg = f"message_type: CHAT_MESSAGE\nsender_name: JOINER\ncontent_type: TEXT\nmessage_text: {text}\n"
-            sock.sendto(msg.encode(), host_addr)
+            sequence_number += 1
+            msg = {
+                "message_type": "CHAT_MESSAGE",
+                "sender_name": "JOINER",
+                "content_type": "TEXT",
+                "message_text": text,
+                "sequence_number": sequence_number
+            }
+            sock.sendto(json.dumps(msg).encode(), host_addr)
+            continue
+
+        if cmd == "SEND_STICKER":
+            if len(parts) < 2:
+                print("Usage: SEND_STICKER <file_path>")
+                continue
+            send_sticker(host_addr, parts[1])
             continue
 
         if cmd == "exit":
@@ -276,7 +338,7 @@ def user_input_loop():
 # ------------------------
 def main():
     threading.Thread(target=listen, daemon=True).start()
-    user_input_loop()  # run blocking in main thread
+    user_input_loop()
 
 if __name__ == "__main__":
     main()
