@@ -6,15 +6,10 @@
 #define STATE_PROCESSING_TURN 1
 #define STATE_WAITING_FOR_RESOLUTION 2
 #define STATE_GAME_OVER 3
-#include "pokemon_data.h"
+#include "pokemon_data.h" // Includes the correct definitions for Pokemon and Move
 #include <stdbool.h> 
 
-typedef struct {
-    char name[64];
-    char type[32];
-    int power;
-    char category[16];  // PHYSICAL/SPECIAL/STATUS
-} Move;
+// NOTE: The conflicting Move struct definition has been removed from here.
 
 typedef struct {
     char attacker[64];
@@ -27,6 +22,7 @@ typedef struct {
 } CalculationReport;
 
 typedef struct {
+    // These now use the updated Pokemon struct from pokemon_data.h
     Pokemon myPokemon;
     Pokemon oppPokemon;
 

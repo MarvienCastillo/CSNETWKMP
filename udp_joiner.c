@@ -11,7 +11,7 @@
 #include <stdarg.h>
 #include <conio.h>
 #include "BattleManager.h"
-
+// #include "gamelogic.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -392,7 +392,7 @@ void processReceivedMessage(char *msg, struct sockaddr_in *from_addr, int from_l
     printf("[JOINER] Game Over received.\n");
   }
   else{
-
+      printf("Message: %s\n", type);
   }
   printf("========================================\n");
 }

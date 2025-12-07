@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <conio.h>
 #include <stdbool.h>
+// #include "game_logic.h"
 #pragma comment(lib, "Ws2_32.lib")
 #include "BattleManager.h"
 #define MAXBUF 4096
@@ -262,7 +263,7 @@ int main(void) {
     char line[512];
     char fullmsg[MAXBUF];
 
-    struct sockaddr_in last_peer; int last_peer_len = 0;
+    struct sockaddr_in last_peer; int last_peer_len = sizeof(last_peer);
     memset(&last_peer, 0, sizeof(last_peer));
     last_peer.sin_family = AF_INET;
     last_peer.sin_addr.s_addr = INADDR_ANY;
@@ -336,10 +337,7 @@ int main(void) {
 
                 char *mt = get_message_type(recvbuf);
                 if (!mt) continue;
-
                 // save last peer for unicast replies
-                
-
                 if (!strncmp(mt, "HANDSHAKE_REQUEST", strlen("HANDSHAKE_REQUEST"))) {
                     printf("[HOST] HANDSHAKE_REQUEST from %s:%d\n", inet_ntoa(from.sin_addr), ntohs(from.sin_port));
                     // reply with handshake_response
