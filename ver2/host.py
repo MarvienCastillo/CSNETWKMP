@@ -35,7 +35,7 @@ class BattleManager:
         self.battles[key] = {
             "pokemon": pokemon,
             "boosts": boosts,
-            "hp": 100,
+            "hp": 50,
             "turn": 0,
             "current_player": "HOST" if key == "HOST" else "JOINER",
             "battle_over": False,
@@ -278,25 +278,53 @@ def user_input_loop():
             continue
 
         if cmd == "CHAT_MESSAGE":
-            text = cmdline[len("CHAT_MESSAGE"):].strip()
             sequence_numbers["HOST"] += 1
-            for addr in list(joiners.keys()) + list(spectators.keys()):
-                msg = {
-                    "message_type": "CHAT_MESSAGE",
-                    "sender_name": "HOST",
-                    "content_type": "TEXT",
-                    "message_text": text,
-                    "sequence_number": sequence_numbers["HOST"]
-                }
-                sock.sendto(json.dumps(msg).encode(), addr)
-            continue
+            content_type = input("content_type (TEXT/STICKER): ").strip().upper()
 
-        if cmd == "SEND_STICKER":
-            if len(parts) < 2:
-                print("Usage: SEND_STICKER <file_path>")
+            msg = {"message_type": "CHAT_MESSAGE",
+                "sender_name": "HOST",
+                "sequence_number": sequence_numbers["HOST"]}
+
+            if content_type == "TEXT":
+                text = input("message_text: ").strip()
+                msg.update({
+                    "content_type": "TEXT",
+                    "message_text": text
+                })
+            elif content_type == "STICKER":
+                sticker_path = input("sticker file path: ").strip()
+                if not os.path.isfile(sticker_path):
+                    print("[JOINER] File not found")
+                    continue
+                with open(sticker_path, "rb") as f:
+                    data = f.read()
+                b64_data = base64.b64encode(data).decode()
+                # split into chunks
+                chunks = [b64_data[i:i+MAX_UDP_SIZE] for i in range(0, len(b64_data), MAX_UDP_SIZE)]
+                total_chunks = len(chunks)
+                for idx, chunk in enumerate(chunks, 1):
+                    sequence_number += 1
+                    msg_chunk = {
+                        "message_type": "CHAT_MESSAGE",
+                        "sender_name": "JOINER",
+                        "content_type": "STICKER",
+                        "sticker_data": chunk,
+                        "chunk_number": idx,
+                        "total_chunks": total_chunks,
+                        "filename": os.path.basename(sticker_path),
+                        "sequence_number": sequence_number
+                    }
+                    sock.sendto(json.dumps(msg_chunk).encode(), addr)
+                    if verbose:
+                        print(f"[STICKER SENT] {sticker_path} chunk {idx}/{total_chunks}")
+
+            else:
+                print("[HOST] Invalid content_type")
                 continue
+
             for addr in list(joiners.keys()) + list(spectators.keys()):
-                send_sticker(addr, parts[1])
+                sock.sendto(json.dumps(msg).encode(), addr)
+            print(f"[HOST] {content_type} message sent. Seq={sequence_numbers['HOST']}")
             continue
 
         if cmd == "BATTLE_SETUP":
